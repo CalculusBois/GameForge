@@ -1260,11 +1260,25 @@ export default function App() {
                                                     onClick={() =>
                                                         void act(async () => {
                                                             await engine.current?.save();
+                                                            const payload =
+                                                                JSON.stringify(
+                                                                    {
+                                                                        save: JSON.parse(
+                                                                            store.export(),
+                                                                        ),
+                                                                        analytics:
+                                                                            JSON.parse(
+                                                                                store.exportAnalytics(),
+                                                                            ),
+                                                                    },
+                                                                    null,
+                                                                    2,
+                                                                );
                                                             const url =
                                                                 URL.createObjectURL(
                                                                     new Blob(
                                                                         [
-                                                                            store.export(),
+                                                                            payload,
                                                                         ],
                                                                         {
                                                                             type: "application/json",
@@ -1277,7 +1291,7 @@ export default function App() {
                                                                 );
                                                             a.href = url;
                                                             a.download =
-                                                                "gameforge-worlds.json";
+                                                                "gameforge-export.json";
                                                             a.click();
                                                             setTimeout(
                                                                 () =>
@@ -1286,10 +1300,10 @@ export default function App() {
                                                                     ),
                                                                 1000,
                                                             );
-                                                            return "Save file exported";
+                                                            return "Save and analytics exported";
                                                         })
                                                     }>
-                                                    Export all local saves
+                                                    Export saves and analytics
                                                 </button>
                                                 <label className="import-label">
                                                     Import save file
