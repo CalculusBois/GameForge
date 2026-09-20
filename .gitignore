@@ -1,0 +1,7 @@
+node_modules
+dist
+.tools
+.npm-cache
+.node.tar.gz
+.DS_Store
+*.tsbuildinfo

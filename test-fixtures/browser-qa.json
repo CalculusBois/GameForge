@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "active": "qa-fixture",
+  "worlds": {
+    "qa-fixture": {
+      "id": "qa-fixture",
+      "name": "QA fixture — test resources",
+      "generator": 1,
+      "settings": {
+        "seed": "LUMEN-01",
+        "difficulty": "explorer",
+        "roughness": 1,
+        "caves": 1,
+        "abundance": 1
+      },
+      "player": {
+        "x": 288,
+        "y": 504
+      },
+      "checkpoint": {
+        "x": 288,
+        "y": 504
+      },
+      "inventory": [
+        {
+          "id": "pickaxe",
+          "count": 1
+        },
+        {
+          "id": "blaster",
+          "count": 1
+        },
+        {
+          "id": "wood",
+          "count": 12
+        },
+        {
+          "id": "stone",
+          "count": 12
+        },
+        {
+          "id": "dirt",
+          "count": 20
+        },
+        {
+          "id": "iron",
+          "count": 12
+        },
+        {
+          "id": "scrap",
+          "count": 8
+        },
+        {
+          "id": "crystal",
+          "count": 8
+        },
+        {
+          "id": "herb",
+          "count": 4
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "selected": 1,
+      "coins": 100,
+      "progress": {
+        "stone": 0,
+        "kills": 0,
+        "biome": 0,
+        "chest": 0,
+        "craft": 0
+      },
+      "claimed": [],
+      "edits": {},
+      "opened": [],
+      "harvested": [],
+      "defeated": [],
+      "explored": {},
+      "created": 1789856178591,
+      "pendingLoot": {}
+    }
+  },
+  "profile": {
+    "owned": [
+      "frontier"
+    ],
+    "equipped": "frontier"
+  }
+}
