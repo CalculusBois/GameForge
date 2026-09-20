@@ -5,4 +5,3 @@ dist
 .node.tar.gz
 .DS_Store
 *.tsbuildinfo
-src/.App.tsx.swp

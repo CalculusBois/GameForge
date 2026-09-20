@@ -1,5 +1,3 @@
-import { bossSites } from './bossSites';
-import { baseTile as legacyBaseTile } from './terrain-v1';
 import { CHUNK, DEPTH, TILE, WORLD_LIMIT, MATERIALS, type Biome, type Material, type WorldSave, type WorldSettings } from './model';
 export const chunkOf = (n: number) => Math.floor(n / CHUNK);
 export const localOf = (n: number) => ((n % CHUNK) + CHUNK) % CHUNK;
@@ -9,36 +7,8 @@ export function hash(seed: string, x: number, y: number, stream = 'terrain') { l
     h = Math.imul(h ^ c.charCodeAt(0), 16777619); h ^= h >>> 16; h = Math.imul(h, 2246822507); h ^= h >>> 13; return (h >>> 0) / 4294967296; }
 const smooth = (v: number) => v * v * (3 - 2 * v);
 export function noise(seed: string, x: number, y: number, stream: string) { const ix = Math.floor(x), iy = Math.floor(y), fx = smooth(x - ix), fy = smooth(y - iy), a = hash(seed, ix, iy, stream), b = hash(seed, ix + 1, iy, stream), c = hash(seed, ix, iy + 1, stream), d = hash(seed, ix + 1, iy + 1, stream); return (a + (b - a) * fx) * (1 - fy) + (c + (d - c) * fx) * fy; }
-export function surface(s: WorldSettings, x: number) {
-    if (x >= -22 && x <= 40)
-        return 22;
-    let h = 22
-        + (noise(s.seed, x / 100, 0, 'height') - .5) * 18 * s.roughness
-        + Math.sin(x / 33) * 3
-        + (noise(s.seed, x / 310, 0, 'mountain') - .5) * 14 * s.roughness;
-    // Tall peaks: gentle approach on one face, cliff on the other — build or path around.
-    const period = 210;
-    const region = Math.floor(x / period);
-    for (let i = -1; i <= 1; i++) {
-        const r = region + i;
-        const center = r * period + Math.floor(hash(s.seed, r, 0, 'peak') * 90) + 48;
-        if (center > -100 && center < 120)
-            continue;
-        const peak = Math.round((26 + hash(s.seed, r, 1, 'peak-h') * 22) * Math.min(1.25, s.roughness));
-        const left = 16 + Math.floor(hash(s.seed, r, 2, 'peak-l') * 20);
-        const right = Math.max(5, Math.ceil(peak / 8));
-        const dx = x - center;
-        let rise = 0;
-        if (dx <= 0 && -dx <= left)
-            rise = peak * (1 + dx / left);
-        else if (dx > 0 && dx <= right)
-            rise = peak * (1 - dx / right);
-        if (rise > 0)
-            h -= rise;
-    }
-    const blend = Math.min(1, Math.max(0, x > 40 ? (x - 40) / 35 : (-22 - x) / 35));
-    return Math.max(2, Math.round(22 + (h - 22) * blend));
-}
+export function surface(s: WorldSettings, x: number) { if (x >= -22 && x <= 40)
+    return 22; const h = 22 + (noise(s.seed, x / 100, 0, 'height') - .5) * 18 * s.roughness + Math.sin(x / 33) * 3 + (noise(s.seed, x / 310, 0, 'mountain') - .5) * 22 * s.roughness; const blend = Math.min(1, Math.max(0, x > 40 ? (x - 40) / 35 : (-22 - x) / 35)); return Math.round(22 + (h - 22) * blend); }
 export function biome(s: WorldSettings, x: number, y: number): Biome {
     const top = surface(s, x);
     // Deep mantle: Ashen depths (volcanic magma & obsidian crusts)
@@ -84,33 +54,12 @@ export function baseTile(s: WorldSettings, x: number, y: number): Material {
         return 6;
     if (y < 0)
         return 0;
-    for (const site of bossSites(s)) {
-        if (Math.abs(x-site.x) <= 17 && y >= site.floor-11 && y <= site.floor+1) {
-            if (y >= site.floor) return 2;
-            return 0;
-        }
-    }
-    // Each deep 40×16 cell owns at most one finite basin, with a solid lip and floor.
-    // Mining its walls never creates new liquid cells.
-    if (y >= 115 && y < DEPTH - 3) {
-        const cellX = Math.floor(x / 40), cellY = Math.floor(y / 16);
-        const ax = cellX * 40 + 10 + Math.floor(hash(s.seed, cellX, cellY, 'basin-x') * 20);
-        const floor = cellY * 16 + 10;
-        if (hash(s.seed, cellX, cellY, 'basin') < .8 && Math.abs(x-ax) <= 5 && y >= floor-4 && y <= floor+1) {
-            if (y === floor+1 || Math.abs(x-ax) === 5) return 2;
-            if (y >= floor-1) return 23;
-            return 0;
-        }
-    }
     const top = surface(s, x);
     if (y < top)
         return 0;
     // Outpost foundation and first learning area are protected from cave generation.
     if (x >= 0 && x <= 25 && y >= 22 && y < 25)
         return 7;
-    // Accessible starter copper/coal: eight ore tiles permit the first upgrade.
-    if (x >= 27 && x <= 34 && y === 22) return 10;
-    if (x >= -7 && x <= -3 && y === 22) return 11;
     const starterTunnel = x >= 36 && x <= 100 && Math.abs(y - nearCave(x)) < 3;
     const owner = Math.floor((x - 78 + 64) / 128), anchor = owner * 128 + 78;
     const chamber = Math.abs(x - anchor) < 8 && Math.abs(y - caveAxis(s, anchor)) < 4;
@@ -121,6 +70,10 @@ export function baseTile(s: WorldSettings, x: number, y: number): Material {
     if (starterTunnel)
         return 0;
     if (cave) {
+        // Deep bounded lava pools in Ashen depths mantle hollows (1-3% coverage, non-spreading, strictly no water)
+        if (y >= 115 && y < DEPTH - 3 && noise(s.seed, x / 8, y / 5, 'lava') > 0.74) {
+            return 23; // Lava hazard pool
+        }
         return 0;
     }
     if (x >= 27 && x <= 32 && y >= 22 && y <= 25)
@@ -149,7 +102,7 @@ export function baseTile(s: WorldSettings, x: number, y: number): Material {
                 return oreType < .35 ? 13 : oreType < .65 ? 11 : 4;
             }
             if (b === 'Crystal depths') {
-                return depth >= 40 && oreType > .8 ? 16 : oreType < .35 ? 4 : oreType < .65 ? 12 : 13;
+                return oreType < .35 ? 4 : oreType < .65 ? 12 : 13;
             }
             return oreType < .35 ? 3 : oreType < .6 ? 11 : oreType < .85 ? 12 : 13;
         } else {
@@ -163,19 +116,15 @@ export function baseTile(s: WorldSettings, x: number, y: number): Material {
         }
     }
     if (y === top) {
-        const peakRise = Math.max(0, 24 - top);
-        if (peakRise > 14) return 2; // rocky mountain summit — visible skyline
         if (b === 'Rust wastes') return 2;
         if (b === 'Frost highlands') return 2;
         return 9;
     }
-    if (y < top + 4) {
-        const peakRise = Math.max(0, 24 - top);
-        return peakRise > 10 && y < top + 2 ? 2 : 1;
-    }
+    if (y < top + 4)
+        return 1;
     return 2;
 }
-export function readTile(w: WorldSave, x: number, y: number): Material { return w.edits[chunkKey(x, y)]?.[tileKey(x, y)] ?? (w.generator === 1 ? legacyBaseTile(w.settings, x, y) : baseTile(w.settings, x, y)); }
+export function readTile(w: WorldSave, x: number, y: number): Material { return w.edits[chunkKey(x, y)]?.[tileKey(x, y)] ?? baseTile(w.settings, x, y); }
 export function editTile(w: WorldSave, x: number, y: number, material: Material) { if (y < 0 || y >= DEPTH - 2 || Math.abs(x) >= WORLD_LIMIT)
     throw new Error('Beyond the supported world boundary.'); const key = chunkKey(x, y); w.edits[key] ??= {}; w.edits[key][tileKey(x, y)] = material; }
 export function generateChunk(w: WorldSave, cx: number, cy: number) { const tiles: Material[] = []; for (let y = 0; y < CHUNK; y++)
@@ -195,12 +144,6 @@ export type Harvest = {
     y: number;
     kind: 'tree' | 'herb' | 'scrap';
 };
-/** Hold-E gather durations (ms). Trees are slower / harder. */
-export const HARVEST_MS: Record<Harvest['kind'], number> = {
-    tree: 1200,
-    herb: 700,
-    scrap: 900,
-};
 export function harvestables(s: WorldSettings, cx: number) { const out: Harvest[] = []; for (let x = cx * CHUNK; x < (cx + 1) * CHUNK; x++) {
     const y = surface(s, x);
     if (x >= 8 && x <= 23)
@@ -210,35 +153,6 @@ export function harvestables(s: WorldSettings, cx: number) { const out: Harvest[
         out.push({ id: `plant:${x}`, x, y, kind: x === 3 ? 'tree' : x === 30 ? 'herb' : b === 'Rust wastes' ? 'scrap' : hash(s.seed, x, 1, 'decoration') > .65 ? 'herb' : 'tree' });
     }
 } return out; }
-/** Mark gatherables destroyed when the block they sit on is removed. */
-export function clearUnsupportedHarvest(w: WorldSave, tiles: Array<[number, number]>) {
-    if (!tiles.length) return [] as Harvest[];
-    const hit = new Set(tiles.map(([x, y]) => `${x},${y}`));
-    const removed: Harvest[] = [];
-    const chunks = new Set(tiles.map(([x]) => chunkOf(x)));
-    for (const cx of chunks) {
-        for (const p of harvestables(w.settings, cx)) {
-            if (w.harvested.includes(p.id) || !hit.has(`${p.x},${p.y}`)) continue;
-            w.harvested.push(p.id);
-            removed.push(p);
-        }
-    }
-    return removed;
-}
-/** Drop any plant whose supporting tile is no longer solid (trees with no ground under them). */
-export function sweepUnsupportedHarvest(w: WorldSave, aroundX: number, radiusChunks = 2) {
-    const removed: Harvest[] = [];
-    const cx0 = chunkOf(aroundX);
-    for (let cx = cx0 - radiusChunks; cx <= cx0 + radiusChunks; cx++) {
-        for (const p of harvestables(w.settings, cx)) {
-            if (w.harvested.includes(p.id)) continue;
-            if (solid(w, p.x, p.y)) continue;
-            w.harvested.push(p.id);
-            removed.push(p);
-        }
-    }
-    return removed;
-}
 export function protectedTile(x: number, y: number) { return x >= 6 && x <= 24 && y >= 18 && y <= 24; }
 
 export function rustWeight(s:WorldSettings,x:number){if(Math.abs(x)<100)return 0;return Math.max(0,Math.min(1,(Math.sin(x/180+hash(s.seed,0,0,'biome')*2)+.1)/.4));}

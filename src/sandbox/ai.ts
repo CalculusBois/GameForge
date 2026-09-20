@@ -17,5 +17,20 @@ export const CHANGE_POLICY = {
     requiresNewWorld: ['seed', 'roughness', 'caves', 'abundance', 'generatorVersion'],
     presentationOnly: ['cameraShake', 'performanceOverlay', 'equippedOwnedSkin'],
 } as const;
-// No AI provider is configured. Future enemy/weapon tuning must pass dedicated
-// bounded validators before being offered as a live-world change.
+
+/** MIT Parley API provider adapter connecting to internal /api/edit-game route */
+export class ParleyWorldCreationProvider implements WorldCreationProvider {
+    async proposeWorld(prompt: string, current?: WorldSettings): Promise<WorldSettings> {
+        const res = await fetch('/api/edit-game', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt, currentState: current, gameType: 'sandbox' }),
+        });
+        const result = await res.json();
+        if (!result.ok) {
+            throw new Error(result.error || 'Parley API request failed.');
+        }
+        return approveWorldProposal(result.data);
+    }
+}
+

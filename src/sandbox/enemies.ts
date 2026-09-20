@@ -1,13 +1,6 @@
-export const ENEMIES = {
-    crawler: { texture: 'walker', hp: 50, damage: 10, speed: 55, range: 260, reward: 12 },
-    hopper: { texture: 'hopper', hp: 42, damage: 12, speed: 90, range: 250, reward: 10 },
-    drone: { texture: 'drone', hp: 45, damage: 10, speed: 75, range: 320, reward: 15 },
-    gunner: { texture: 'gunner', hp: 70, damage: 14, speed: 55, range: 400, reward: 20 },
-    caster: { texture: 'caster', hp: 65, damage: 16, speed: 45, range: 370, reward: 22 },
-    sentinel: { texture: 'sentinel', hp: 130, damage: 22, speed: 35, range: 260, reward: 32 },
-    bomber: { texture: 'bomber', hp: 55, damage: 14, speed: 48, range: 240, reward: 28 },
-    wisp: { texture: 'wisp', hp: 28, damage: 8, speed: 95, range: 340, reward: 14 },
-    skimmer: { texture: 'skimmer', hp: 38, damage: 12, speed: 110, range: 380, reward: 18 },
-};
-export type Kind = keyof typeof ENEMIES;
-export const FLYING: ReadonlySet<Kind> = new Set(['drone', 'wisp', 'skimmer']);
+/**
+ * Re-exports the central enemies registry for backward compatibility.
+ */
+
+export * from './registry/enemies';
+export type Kind = string;

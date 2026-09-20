@@ -1,0 +1,30 @@
+{
+  "id": "ignis-molten-behemoth",
+  "name": "Ignis, Molten Behemoth",
+  "category": "boss",
+  "baseType": "sentinel",
+  "hp": 800,
+  "damage": 42,
+  "speed": 150,
+  "range": 400,
+  "reward": 650,
+  "scale": 3.2,
+  "hitbox": {
+    "width": 110,
+    "height": 95
+  },
+  "attackPattern": {
+    "type": "charge",
+    "interval": 3200,
+    "burstCount": 1,
+    "projectileColor": "#ff4500",
+    "warningTimeMs": 950
+  },
+  "textureTheme": {
+    "primaryColor": "#2b0c05",
+    "secondaryColor": "#e63900",
+    "accentColor": "#ffaa00",
+    "shape": "beast"
+  },
+  "lore": "Forged in the volatile mantle cracks beneath the frontier, this volcanic titan ruptures the surface with earth-shattering charges, leaving trails of superheated slag in its wake."
+}

@@ -1,0 +1,46 @@
+{
+  "id": "void-crawler",
+  "name": "Void Crawler",
+  "category": "boss",
+  "baseClass": "BaseAgileCrawler",
+  "baseType": "sentinel",
+  "hasCollider": true,
+  "collider": {
+    "width": 24,
+    "height": 24,
+    "shape": "box",
+    "isTrigger": false,
+    "offsetX": 0,
+    "offsetY": 0
+  },
+  "mass": 1,
+  "logicController": "PatrolAndAttack",
+  "hp": 80,
+  "damage": 15,
+  "speed": 65,
+  "range": 280,
+  "reward": 20,
+  "scale": 1,
+  "hitbox": {
+    "width": 64,
+    "height": 64
+  },
+  "attackPattern": {
+    "type": "melee",
+    "interval": 1500,
+    "burstCount": 1,
+    "projectileColor": "#ff7777",
+    "warningTimeMs": 500,
+    "modularBehaviors": [
+      "MeleeSwipe"
+    ]
+  },
+  "textureTheme": {
+    "primaryColor": "#e5484d",
+    "secondaryColor": "#ff977d",
+    "accentColor": "#ffd386",
+    "shape": "mech"
+  },
+  "surfaceGroundingEnforced": true,
+  "groundPlacementFormula": "ground_Y + (height / 2) + 0.1"
+}

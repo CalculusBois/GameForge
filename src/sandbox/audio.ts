@@ -11,9 +11,15 @@ class GameAudio {
     private lastMine = 0;
     private bgmOn = false;
     private resumeHooked = false;
+    private volume = 0.35;
 
     unlock() {
         void this.wake();
+    }
+
+    setVolume(n: number) {
+        this.volume = Math.max(0, Math.min(1, n));
+        if (this.master) this.master.gain.value = this.volume;
     }
 
     private ensure() {
@@ -21,7 +27,7 @@ class GameAudio {
             const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
             this.ctx = new Ctx();
             this.master = this.ctx.createGain();
-            this.master.gain.value = 0.6;
+            this.master.gain.value = this.volume;
             this.master.connect(this.ctx.destination);
             this.hookResume();
         }
@@ -44,7 +50,7 @@ class GameAudio {
         if (ctx.state === 'suspended') {
             try { await ctx.resume(); } catch { /* autoplay policy */ }
         }
-        if (this.master) this.master.gain.value = 0.6;
+        if (this.master) this.master.gain.value = this.volume;
     }
 
     private async ready() {

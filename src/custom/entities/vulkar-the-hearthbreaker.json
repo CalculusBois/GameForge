@@ -1,0 +1,48 @@
+{
+  "id": "vulkar-the-hearthbreaker",
+  "name": "Vulkar, the Hearthbreaker",
+  "category": "boss",
+  "baseClass": "BaseGroundBoss",
+  "baseType": "sentinel",
+  "hasCollider": true,
+  "collider": {
+    "width": 300,
+    "height": 300,
+    "shape": "box",
+    "isTrigger": false,
+    "offsetX": 0,
+    "offsetY": 0
+  },
+  "mass": 150,
+  "logicController": "AggressiveBoss",
+  "hp": 800,
+  "damage": 14,
+  "speed": 55,
+  "range": 650,
+  "reward": 450,
+  "scale": 2.5,
+  "hitbox": {
+    "width": 200,
+    "height": 160
+  },
+  "attackPattern": {
+    "type": "ProjectileBurst",
+    "interval": 3600,
+    "burstCount": 4,
+    "projectileColor": "#FF6900",
+    "warningTimeMs": 1500,
+    "modularBehaviors": [
+      "ProjectileBurst",
+      "Dash"
+    ]
+  },
+  "textureTheme": {
+    "primaryColor": "#29201E",
+    "secondaryColor": "#C63B12",
+    "accentColor": "#FFD36A",
+    "shape": "beast"
+  },
+  "lore": "A colossal, horn-crowned beast of basalt plates and molten sinew, Vulkar follows the warmth of frontier hearths. Beneath its cracked breastplate, a furnace heart swells to white-gold before its jaws unleash a beam-like salvo of magma. When prey retreats, it lowers its obsidian horns and charges, shaking embers from its mountainous shoulders.",
+  "surfaceGroundingEnforced": true,
+  "groundPlacementFormula": "ground_Y + (height / 2) + 0.1"
+}

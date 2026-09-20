@@ -1,0 +1,48 @@
+{
+  "id": "briarsteel-tenblade-warden",
+  "name": "Briarsteel, the Tenblade Warden",
+  "category": "boss",
+  "baseClass": "BaseGroundBoss",
+  "baseType": "sentinel",
+  "hasCollider": true,
+  "collider": {
+    "width": 72,
+    "height": 96,
+    "shape": "box",
+    "isTrigger": false,
+    "offsetX": 0,
+    "offsetY": 0
+  },
+  "mass": 150,
+  "logicController": "AggressiveBoss",
+  "hp": 1400,
+  "damage": 7,
+  "speed": 55,
+  "range": 650,
+  "reward": 500,
+  "scale": 1,
+  "hitbox": {
+    "width": 72,
+    "height": 96
+  },
+  "attackPattern": {
+    "type": "ProjectileBurst",
+    "interval": 4800,
+    "burstCount": 5,
+    "projectileColor": "#B9FFD9",
+    "warningTimeMs": 1400,
+    "modularBehaviors": [
+      "ProjectileBurst",
+      "ProjectileBurst"
+    ]
+  },
+  "textureTheme": {
+    "primaryColor": "#284D3D",
+    "secondaryColor": "#879BA5",
+    "accentColor": "#B9FFD9",
+    "shape": "humanoid"
+  },
+  "lore": "An ancient frontier guardian clad in moss-threaded steel, Briarsteel bears ten spectral swords in a crown above its shoulders. Before each attack, the blades unfold like luminous leaves and ring out a warning chord. It watches the paths beyond the settlement, guarding a forgotten oath beneath the green.",
+  "surfaceGroundingEnforced": true,
+  "groundPlacementFormula": "ground_Y + (height / 2) + 0.1"
+}

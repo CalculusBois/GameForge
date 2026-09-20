@@ -1,0 +1,48 @@
+{
+  "id": "briarsteel-the-orbiting-duelist",
+  "name": "Briarsteel, the Orbiting Duelist",
+  "category": "boss",
+  "baseClass": "BaseGroundBoss",
+  "baseType": "sentinel",
+  "hasCollider": true,
+  "collider": {
+    "width": 64,
+    "height": 96,
+    "shape": "box",
+    "isTrigger": false,
+    "offsetX": 0,
+    "offsetY": 0
+  },
+  "mass": 150,
+  "logicController": "AggressiveBoss",
+  "hp": 1800,
+  "damage": 16,
+  "speed": 48,
+  "range": 850,
+  "reward": 700,
+  "scale": 1,
+  "hitbox": {
+    "width": 64,
+    "height": 96
+  },
+  "attackPattern": {
+    "type": "ProjectileBurst",
+    "interval": 3200,
+    "burstCount": 3,
+    "projectileColor": "#B9FFD9",
+    "warningTimeMs": 1100,
+    "modularBehaviors": [
+      "ProjectileBurst",
+      "MeleeSwipe"
+    ]
+  },
+  "textureTheme": {
+    "primaryColor": "#254D3E",
+    "secondaryColor": "#B8C9D1",
+    "accentColor": "#80FFD2",
+    "shape": "humanoid"
+  },
+  "lore": "Beneath the Verdant frontier stands an empty suit of ivy-threaded armor, crowned by six revolving swords. Before each volley, three blades halt in the air and glow mint-white, their points turning toward the intruder. Once released, they remember their quarry—but not the stone standing between them.",
+  "surfaceGroundingEnforced": true,
+  "groundPlacementFormula": "ground_Y + (height / 2) + 0.1"
+}
