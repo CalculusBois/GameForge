@@ -39,8 +39,9 @@ import {
   type ItemId,
 } from './model';
 import { readTile, editTile, clearLine, solid, biome, surface, hash, harvestables, landmarks, protectedTile, clearUnsupportedHarvest, sweepUnsupportedHarvest, HARVEST_MS, type Harvest } from './terrain';
+import { sessionStart_ as analyticsStart, track as analyticsTrack } from '../analytics';
 import { getToolProfile } from './registry/toolsAndWeapons';
-export type Menu = 'inventory' | 'crafting' | 'cooking' | 'skins' | 'objectives' | 'shop' | 'map' | 'worlds' | 'settings' | 'forge' | 'storage' | null;
+export type Menu = 'inventory' | 'crafting' | 'cooking' | 'skins' | 'objectives' | 'shop' | 'map' | 'worlds' | 'settings' | 'stats' | 'forge' | 'storage' | null;
 export interface SandboxHud {
     aiMeters?: {id:string;label:string;icon:string;color:string;value:number;maximum:number;remaining:number}[];
     health: number;
@@ -177,6 +178,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             }
         }
         create() {
+            analyticsStart(store.world.id, store.world.settings.difficulty);
             sandboxAssets(this);
             if(restore){this.health=restore.health;this.mana=restore.mana;this.activeEffects=structuredClone(restore.effects);this.shieldBudget=restore.shieldBudget;}
             for (const [id,boss] of Object.entries(BOSS_REGISTRY)) ENEMIES[id] = {
@@ -464,6 +466,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             if (!this.health) {
                 this.creator?.runtime.death();
                 this.status = 'dead';
+            analyticsTrack('player_death', biome(store.world.settings, Math.floor(this.player.x / TILE), Math.floor(this.player.y / TILE)), String(Math.floor(this.player.x / TILE)), String(Math.floor(this.player.y / TILE)));
                 this.held.clear();
                 this.physics.pause();
                 this.notify('Signal lost. Respawn at the beacon; all possessions are retained.');
@@ -518,6 +521,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             });
             this.burst(f.x, f.y, 0xffb889);
             if (hp <= 0) {
+            analyticsTrack('enemy_defeated', kind, store.world.inventory[this.selected]?.id ?? 'unknown', String(this.health));
                 f.setData('dying', true);
                 f.setVelocity(0);
                 const id = f.getData('id') as string;
@@ -999,7 +1003,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                     const drop = matProfile.drop;
                     if (drop && !add(w.inventory, drop, 1))
                         throw new Error('Inventory full. The block was not mined.');
-                    if (!foreground && w.backgroundWalls?.[key]) delete w.backgroundWalls[key]; else editTile(w, x, y, 0);
+                    if (!foreground && w.backgroundWalls?.[key]) delete w.backgroundWalls[key]; else editTile(w, x, y, 0); analyticsTrack('block_mined', MATERIALS[m].name, drop ?? '', biome(store.world.settings, x, Math.floor(this.player.y / TILE)));
                     clearUnsupportedHarvest(w, [[x, y]]);
                     sweepUnsupportedHarvest(w, x, 1);
                     if (drop === 'stone')
