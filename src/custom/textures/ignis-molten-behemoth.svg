@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 110 95" width="110" height="95">
+  <title>Ignis, Molten Behemoth</title>
+  <defs>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+  <g filter="url(#glow)">
+    <!-- Beast Silhouette -->
+  <ellipse cx="55" cy="52.25000000000001" rx="44" ry="28.5" fill="#2b0c05"/>
+  <!-- Fangs & Eyes -->
+  <polygon points="33,23.75 38.5,38 27.5,38" fill="#e63900"/>
+  <polygon points="77,23.75 82.5,38 71.5,38" fill="#e63900"/>
+  <circle cx="44" cy="42.75" r="6.6" fill="#ffaa00"/>
+  <circle cx="66" cy="42.75" r="6.6" fill="#ffaa00"/>
+  <!-- Claws -->
+  <rect x="22" y="76" width="13.2" height="14.25" rx="2" fill="#e63900"/>
+  <rect x="74.80000000000001" y="76" width="13.2" height="14.25" rx="2" fill="#e63900"/>
+  </g>
+</svg>

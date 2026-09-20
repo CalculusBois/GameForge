@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>Void Crawler</title>
+  <defs>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+  <g filter="url(#glow)">
+    <!-- Mech Chassis -->
+  <rect x="9.6" y="9.6" width="44.8" height="41.6" rx="4" fill="#e5484d"/>
+  <rect x="16" y="16" width="32" height="12.8" fill="#ff977d"/>
+  <!-- Core Eye & Panels -->
+  <circle cx="32" cy="22.4" r="6.4" fill="#ffd386"/>
+  <rect x="14.08" y="35.2" width="12.8" height="9.6" fill="#ff977d"/>
+  <rect x="37.12" y="35.2" width="12.8" height="9.6" fill="#ff977d"/>
+  <rect x="12.8" y="51.2" width="9.6" height="11.52" fill="#e5484d"/>
+  <rect x="41.6" y="51.2" width="9.6" height="11.52" fill="#e5484d"/>
+  </g>
+</svg>

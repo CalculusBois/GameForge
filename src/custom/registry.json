@@ -1,0 +1,51 @@
+{
+  "version": "1.0.0",
+  "lastUpdated": "2026-09-20T04:35:19.314Z",
+  "entities": [
+    {
+      "id": "ignis-molten-behemoth",
+      "name": "Ignis, Molten Behemoth",
+      "entityType": "boss",
+      "filePath": "src/custom/entities/ignis-molten-behemoth.json",
+      "texturePath": "src/custom/textures/ignis-molten-behemoth.svg",
+      "createdAt": "2026-09-20T02:19:33.382Z",
+      "summary": "Summoned a massive subterranean magma boss named Ignis, Molten Behemoth, tuned to 800 HP with high-impact charging attacks, molten ember visuals, and a massive physical scale."
+    },
+    {
+      "id": "void-crawler",
+      "name": "Void Crawler",
+      "entityType": "enemy",
+      "filePath": "src/custom/entities/void-crawler.json",
+      "texturePath": "src/custom/textures/void-crawler.svg",
+      "createdAt": "2026-09-20T04:18:13.582Z",
+      "summary": "Created high-tier reasoning enemy"
+    },
+    {
+      "id": "vulkar-the-hearthbreaker",
+      "name": "Vulkar, the Hearthbreaker",
+      "entityType": "boss",
+      "filePath": "src/custom/entities/vulkar-the-hearthbreaker.json",
+      "texturePath": "src/custom/textures/vulkar-the-hearthbreaker.svg",
+      "createdAt": "2026-09-20T02:52:46.920Z",
+      "summary": "An 800-HP magma behemoth inheriting BaseGroundBoss physics and behavior. Its charging magma beam uses a telegraphed ProjectileBurst, complemented by lunging charges. At 2.5x scale, its 80x64 reference bounds become a matching 200x160 collider and hitbox. Intended placement is outside the player's base in the Verdant frontier; near-base spawning requires encounter-spawner configuration because this schema has no spawn-location field."
+    },
+    {
+      "id": "briarsteel-tenblade-warden",
+      "name": "Briarsteel, the Tenblade Warden",
+      "entityType": "boss",
+      "filePath": "src/custom/entities/briarsteel-tenblade-warden.json",
+      "texturePath": "src/custom/textures/briarsteel-tenblade-warden.svg",
+      "createdAt": "2026-09-20T04:33:18.387Z",
+      "summary": "Briarsteel, the Tenblade Warden, inherits stable ground-boss physics and pairs two five-sword ProjectileBurst modules for ten swords per attack cycle. Low per-sword damage and a 1.4-second warning keep the encounter manageable near spawn. Intended placement: a Verdant frontier clearing approximately 600 world units from spawn, at least 300 units outside the base perimeter. Intended sword behavior: home toward the player during initial flight, then stop tracking so they can be dodged. Homing, sword-shaped projectiles, and spawn exclusion distances require runtime configuration beyond this schema; they are design requirements, not encoded capabilities."
+    },
+    {
+      "id": "briarsteel-the-orbiting-duelist",
+      "name": "Briarsteel, the Orbiting Duelist",
+      "entityType": "boss",
+      "filePath": "src/custom/entities/briarsteel-the-orbiting-duelist.json",
+      "texturePath": "src/custom/textures/briarsteel-the-orbiting-duelist.svg",
+      "createdAt": "2026-09-20T04:35:19.314Z",
+      "summary": "Adds a level-30 boss with six swords visibly orbiting its body. MeleeSwipe represents a telegraphed sweep of the orbiting blades; ProjectileBurst launches three sword-shaped projectiles, animated point-first toward the player. Each launched sword should continuously follow the player until its first collision with the player or a solid block, then disappear; blocks intercept swords without taking player-directed damage. Use limited turning speed so players can steer pursuing blades into terrain. Inherits stable ground physics and preserves the base mass and controller. Sword-shaped projectile rendering and persistent homing require a ProjectileBurst ability extension because this schema does not expose those settings directly."
+    }
+  ]
+}
