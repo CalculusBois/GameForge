@@ -50,6 +50,25 @@ export function validateBundle(value: unknown): asserts value is Bundle {
 function openDatabase(name='gameforge-frontier'): Promise<IDBDatabase> { return new Promise((resolve, reject) => { const r = indexedDB.open(name, 1); r.onupgradeneeded = () => r.result.createObjectStore('saves'); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); r.onblocked = () => reject(new Error('Close another GameForge tab to update local storage.')); }); }
 export class SaveStore {
     data: Bundle;
+    private beforeAI?: Bundle;
+    private generation = 0;
+    get aiSession() { return !!this.beforeAI; }
+    async beginAISession() {
+        await this.queue;
+        if(this.beforeAI) return;
+        if(this.timer) clearTimeout(this.timer);
+        this.timer=undefined; this.position=undefined;
+        this.beforeAI=structuredClone(this.data);
+        this.data=structuredClone(this.data);
+        this.generation++;
+        this.onChange?.();
+    }
+    async exitAISession() {
+        if(this.timer) clearTimeout(this.timer);
+        this.timer=undefined; this.position=undefined;
+        await this.queue;
+        if(this.beforeAI) { this.data=this.beforeAI; this.beforeAI=undefined; this.generation++; this.onChange?.(); }
+    }
     private db: IDBDatabase;
     private queue: Promise<unknown> = Promise.resolve();
     private timer: ReturnType<typeof setTimeout> | undefined;
@@ -69,7 +88,13 @@ export class SaveStore {
     // The queued transaction reads the latest durable record, so purchases cannot race.
     transact<T>(change: (b: Bundle, w: WorldSave) => T): Promise<T> {
         const expectedWorld = this.data.active;
+        const generation = this.generation;
         const run = this.queue.then(() => new Promise<T>((resolve, reject) => {
+            if(generation !== this.generation) { reject(new Error('Session changed; stale transaction discarded.')); return; }
+            if(this.beforeAI) {
+                try { const next=structuredClone(this.data); const result=change(next,next.worlds[next.active]); validateBundle(next); this.data=next; this.onChange?.(); resolve(result); } catch(e) { reject(e); }
+                return;
+            }
             const tx = this.db.transaction('saves', 'readwrite'), table = tx.objectStore('saves'), read = table.get('bundle');
             let next: Bundle, result: T, failure: unknown;
             read.onsuccess = () => { try {
@@ -116,5 +141,5 @@ export class SaveStore {
     b.profile.gunSkins = [...new Set([...(b.profile.gunSkins ?? []), ...(value.profile.gunSkins ?? [])])];
     b.profile.outfit = { ...b.profile.outfit, ...value.profile.outfit };
     b.profile.guns = { ...b.profile.guns, ...value.profile.guns }; b.active = active; }); }
-    export() { return JSON.stringify(this.data, null, 2); }
+    export() { return JSON.stringify(this.beforeAI ?? this.data, null, 2); }
 }

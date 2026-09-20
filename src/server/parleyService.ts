@@ -1,19 +1,7 @@
 import { loadEnv } from 'vite';
 import { validateConfig, DEFAULT_CONFIG, type GameConfig } from '../platformer/config';
 import { validateSettings, DEFAULT_WORLD, type WorldSettings } from '../sandbox/model';
-import {
-  validateGenerativePayload,
-  preInjectionSanityCheck,
-  theBouncer,
-  type GenerativePayload,
-  type GenerativeEntity,
-} from './entitySchemas';
-import {
-  saveCustomEntity,
-  generateTextureFile,
-  updateRegistry,
-} from './entityFileManager';
-
+import { preInjectionSanityCheck, theBouncer, type GenerativeEntity } from './entitySchemas';
 export { theBouncer, preInjectionSanityCheck };
 
 declare const process: {
@@ -562,6 +550,10 @@ export async function handleGameEdit(
     return { ok: false, error: 'Please provide a prompt describing your changes.', statusCode: 400 };
   }
 
+  if (isGenerativePrompt(prompt, req.gameType)) {
+    const { handleCreation } = await import('./creatorService');
+    return await handleCreation(req, configOverride, fetchFn) as GameEditResponse;
+  }
   const config = { ...getParleyConfig(), ...configOverride };
 
   if (!config.apiKey) {
@@ -694,110 +686,6 @@ export async function handleGameEdit(
       error: `Parley model output could not be parsed as JSON: ${err instanceof Error ? err.message : String(err)}`,
       statusCode: 422,
     };
-  }
-
-  // Generative pipeline: validate schemas and persist to custom files
-  if (isGenerative) {
-    let payload: GenerativePayload | null = null;
-    let initialError: Error | null = null;
-
-    try {
-      payload = validateGenerativePayload(parsed);
-    } catch (err) {
-      initialError = err instanceof Error ? err : new Error(String(err));
-    }
-
-    let autoCorrected = false;
-
-    // Self-healing attempt: if initial response was incomplete, prompt Parley API a second time
-    if (!payload && initialError) {
-      try {
-        const correctivePrompt = `Your previous JSON output failed internal engine validation with errors:
-${initialError.message}
-Fix the JSON output immediately. Remember:
-- Must inherit from BaseGroundBoss, BaseFlyingEnemy, BaseAgileCrawler, or BaseRangedTurret.
-- Must include hasCollider: true, collider: { width, height, shape: "box" }, mass: number (>0), logicController: string.
-- Stats must be within valid bounds (e.g. HP 10-5000, damage 1-150).
-- Return ONLY valid JSON matching the schema.`;
-
-        const retryBody: Record<string, unknown> = {
-          model: targetModel,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: `Player Request & Game State:\n${userPayload}` },
-            { role: 'assistant', content: rawContent },
-            { role: 'user', content: correctivePrompt },
-          ],
-        };
-
-        if (!isReasoningModel(targetModel)) {
-          retryBody.temperature = 0.1;
-        }
-
-        const retryRes = await fetchFn(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${config.apiKey}`,
-          },
-          body: JSON.stringify(retryBody),
-        });
-
-        if (retryRes.ok) {
-          const retryData = await retryRes.json();
-          const retryContent = retryData?.choices?.[0]?.message?.content;
-          if (retryContent && typeof retryContent === 'string') {
-            const retryJsonStr = extractJsonString(retryContent);
-            const retryParsed = JSON.parse(retryJsonStr);
-            payload = validateGenerativePayload(retryParsed);
-            autoCorrected = true;
-          }
-        }
-      } catch {
-        // Fallback continues below
-      }
-    }
-
-    if (!payload) {
-      return {
-        ok: false,
-        error: `Schema validation failed: ${initialError?.message || 'Invalid entity payload.'}`,
-        statusCode: 422,
-      };
-    }
-
-    // Intercept with The Bouncer (local sanitization & safeguard layer) before writing any files
-    payload = theBouncer(payload);
-
-    try {
-      const { jsonPath } = saveCustomEntity(payload.entity, config.baseDir);
-      const { svgPath } = generateTextureFile(payload.entity, payload.entityType, config.baseDir);
-      const registry = updateRegistry(payload.entity, payload.entityType, payload.explanation, config.baseDir);
-
-      return {
-        ok: true,
-        data: {
-          entityType: payload.entityType,
-          entity: payload.entity,
-          explanation: payload.explanation,
-          autoCorrected,
-          files: {
-            json: jsonPath,
-            texture: svgPath,
-            registry: 'src/custom/registry.json',
-          },
-          registryCount: registry.entities.length,
-        },
-        message: `✦ ${payload.entityType.toUpperCase()}: "${payload.entity.name}" (Base: ${(payload.entity as any).baseClass || 'Custom'}) forged, textured, and registered into GameForge engine.`,
-        statusCode: 200,
-      };
-    } catch (err) {
-      return {
-        ok: false,
-        error: `Failed to persist custom entity files: ${err instanceof Error ? err.message : String(err)}`,
-        statusCode: 500,
-      };
-    }
   }
 
   // Standard platformer/sandbox settings path

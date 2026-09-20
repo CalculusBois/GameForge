@@ -1,3 +1,4 @@
+import { handleCreation } from './creatorService';
 import type { Plugin, ViteDevServer } from 'vite';
 import { handleGameEdit, getParleyConfig, type GameEditRequest } from './parleyService';
 
@@ -8,6 +9,7 @@ import { handleGameEdit, getParleyConfig, type GameEditRequest } from './parleyS
  * - GET /api/parley/health: Returns API status and configured model.
  */
 interface MiddlewareReq {
+  headers?: Record<string,string | undefined>;
   url?: string;
   method?: string;
   on(event: string, listener: (...args: any[]) => void): void;
@@ -53,13 +55,18 @@ export function parleyApiPlugin(): Plugin {
         }
 
         // Game edit endpoint
-        if ((url === '/api/edit-game' || url === '/api/game-edit') && req.method === 'POST') {
+        if ((url === '/api/edit-game' || url === '/api/game-edit' || url === '/api/creations') && req.method === 'POST') {
           let rawBody = '';
+          let rejected = false;
+          const origin = req.headers?.origin;
+          if (origin && new URL(origin).host !== req.headers?.host) { res.statusCode = 403; res.end(JSON.stringify({ok:false,error:'Cross-origin creation requests are not allowed.'})); return; }
           req.on('data', (chunk: unknown) => {
+            if (rejected) return;
             rawBody += String(chunk);
             // Guard against excessively large payloads (> 5MB)
-            if (rawBody.length > 5 * 1024 * 1024) {
+            if (rawBody.length > 128 * 1024) {
               res.setHeader('Content-Type', 'application/json');
+              rejected = true;
               res.statusCode = 413;
               res.end(JSON.stringify({ ok: false, error: 'Payload too large.' }));
               req.destroy?.();
@@ -67,6 +74,7 @@ export function parleyApiPlugin(): Plugin {
           });
 
           req.on('end', async () => {
+            if (rejected) return;
             try {
               let requestData: GameEditRequest;
               try {
@@ -83,13 +91,13 @@ export function parleyApiPlugin(): Plugin {
                 return;
               }
 
-              const result = await handleGameEdit(requestData);
+              const result = url === '/api/creations' ? await handleCreation(requestData) : await handleGameEdit(requestData);
               res.setHeader('Content-Type', 'application/json');
               res.statusCode = result.statusCode || (result.ok ? 200 : 500);
               res.end(JSON.stringify(result));
             } catch (err) {
               // Dev server resilience: always return a JSON error instead of crashing
-              console.error('[GameForge Parley API Error]:', err);
+              
               res.setHeader('Content-Type', 'application/json');
               res.statusCode = 500;
               res.end(
@@ -102,7 +110,7 @@ export function parleyApiPlugin(): Plugin {
           });
 
           req.on('error', (err: unknown) => {
-            console.error('[GameForge Request Error]:', err);
+            void err;
             if (!res.headersSent) {
               res.setHeader('Content-Type', 'application/json');
               res.statusCode = 500;

@@ -15,3 +15,12 @@ Current focused verification: `/?verify=sandbox` uses a separate timestamped Ind
 Still incomplete: animal runtime, variants/elites, bosses, modular cosmetics/gun skins, shop supplies, true bounded lava basins/coverage, portable stations/furniture/building sets/background layering, art/audio polish, full runtime/save validation and recovery, performance measurements, extended death/recall/combat verification. Full requirements remain tracked; do not declare the whole upgrade finished.
 
 Next: finish current regression checks, use isolated browser verification, fix any gameplay blockers, then proceed in requested milestone order. Existing generator 1 worlds retain exactly the terrain algorithm present at the start of this session; prior unversioned generator changes cannot be recovered from HEAD because sandbox files were untracked.
+
+## Session creator milestone — 2026-09-20
+- Confirmed updated edit target `/Users/Chewy/Documents/GameForge-ivan-updates`; original `/Users/Chewy/Documents/GameForge` read-only. No Git repository in updated folder. Checkpoint `checkpoints/pre-session-creator-20260920.tar.gz` excludes secrets, dependencies and saves.
+- Both projects had identical Parley server implementation. Updated folder lacked original `.env`, `.tools`, and dependencies. Copied those locally; `.env` now ignored and mode 0600. No secret values printed. Dedicated updated server: port **5186** (not original 5175).
+- New `/api/creations` validates declarative specifications; old generative route delegates to it. No generated source/texture/registry writes. Strict shape, state, attack, status, reference and resource bounds. Failure preserves previous specification; one bounded repair attempt.
+- SaveStore now forks its whole bundle for AI sessions and diverts all transactions into memory. Export returns pre-session durable data. UI offers remove/reset/exit and cancellation/stale-response protection.
+- New composable runtime/renderer uses original polygons, layered sword art, moving orbit components, bounded homing/spread/burst/orbit shots, telegraphs, phase graph, named health bars, buildup and temporary DOT/HUD.
+- Live Parley verified via POST on 5186: actual sword prompt returned Hexhalo Blade Sovereign, 6 orbiting swords, sword projectiles, 1000ms windup, bounded 1.15 rad/s homing and 4200ms lifetime. This is live provider evidence, not yet full browser acceptance.
+- Typecheck passed. First revised suite: 112 tests passed. Further session/engine/browser verification in progress; do not assume completion from this milestone.

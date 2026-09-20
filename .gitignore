@@ -5,3 +5,7 @@ dist
 .node.tar.gz
 .DS_Store
 *.tsbuildinfo
+
+.env
+.env.*
+!.env.example
