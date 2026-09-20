@@ -90,6 +90,22 @@ export function harvestables(s: WorldSettings, cx: number) { const out: Harvest[
         out.push({ id: `plant:${x}`, x, y, kind: x === 3 ? 'tree' : x === 30 ? 'herb' : b === 'Rust wastes' ? 'scrap' : hash(s.seed, x, 1, 'decoration') > .65 ? 'herb' : 'tree' });
     }
 } return out; }
+/** Mark gatherables destroyed when the block they sit on is removed. */
+export function clearUnsupportedHarvest(w: WorldSave, tiles: Array<[number, number]>) {
+    if (!tiles.length) return [] as Harvest[];
+    const hit = new Set(tiles.map(([x, y]) => `${x},${y}`));
+    const removed: Harvest[] = [];
+    const chunks = new Set(tiles.map(([x]) => chunkOf(x)));
+    for (const cx of chunks) {
+        for (const p of harvestables(w.settings, cx)) {
+            if (w.harvested.includes(p.id) || !hit.has(`${p.x},${p.y}`)) continue;
+            w.harvested.push(p.id);
+            removed.push(p);
+        }
+    }
+    return removed;
+}
+export const HARVEST_MS: Record<Harvest['kind'], number> = { herb: 1000, scrap: 1000, tree: 3000 };
 export function protectedTile(x: number, y: number) { return x >= 6 && x <= 24 && y >= 18 && y <= 24; }
 
 export function rustWeight(s:WorldSettings,x:number){if(Math.abs(x)<100)return 0;return Math.max(0,Math.min(1,(Math.sin(x/180+hash(s.seed,0,0,'biome')*2)+.1)/.4));}

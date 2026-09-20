@@ -89,9 +89,9 @@ export class ChunkManager {
                     continue;
                 if (mat === 0 || mat === 8) {
                     if (y > surface(w.settings, x) + 3) {
-                        ruins.fillStyle(biome(w.settings, x, y) === 'Crystal depths' ? 0x24223c : 0x202d35);
+                        ruins.fillStyle(biome(w.settings, x, y) === 'Crystal depths' ? 0x1a1824 : 0x161410);
                         ruins.fillRect(px, py, TILE, TILE);
-                        ruins.fillStyle(0x34404a, .3);
+                        ruins.fillStyle(0x2a2620, .35);
                         ruins.fillRect(px + 3, py + 3, 18, 1);
                     }
                     if (mat === 8) {
@@ -152,7 +152,7 @@ export class ChunkManager {
             bodies.push(body);
         }
         for (const p of harvestables(w.settings, cx)) {
-            if (Math.floor((p.y - 1) / CHUNK) !== cy || w.harvested.includes(p.id))
+            if (Math.floor((p.y - 1) / CHUNK) !== cy || w.harvested.includes(p.id) || !MATERIALS[readTile(w, p.x, p.y)].solid)
                 continue;
             const x = p.x * TILE, y = p.y * TILE;
             if (p.kind === 'tree') {
