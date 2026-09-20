@@ -3,7 +3,7 @@ import { MOVEMENT } from '../platformer/config';
 import { sandboxAssets } from './assets';
 import { ChunkManager } from './chunks';
 import { SaveStore } from './persistence';
-import { ENEMIES, type Kind } from './enemies';
+import { ENEMIES, FLYING, type Kind } from './enemies';
 import { TILE, CHUNK, DEPTH, WORLD_LIMIT, ITEMS, MATERIALS, BUILDING, WEAPONS, add, remove, chest, type Biome, type ItemId } from './model';
 import { readTile, editTile, clearLine, solid, biome, surface, hash, harvestables, landmarks, protectedTile, clearUnsupportedHarvest, HARVEST_MS } from './terrain';
 import { gameAudio } from './audio';
@@ -33,6 +33,7 @@ export interface SandboxController {
     save: () => Promise<void>;
     destroy: () => void;
     setShake: (b: boolean) => void;
+    setHealth: (n: number) => void;
 }
 export interface VerificationPort {
     read:()=>{x:number;y:number;vx:number;vy:number;grounded:boolean;blockedLeft:boolean;blockedRight:boolean;health:number;mana:number;status:string;clock:number;chunks:number;bodies:number;fps:number;busy:boolean;message:string;recall:number;enemies:{id:string;kind:Kind;x:number;y:number;hp:number;state:string}[]};
@@ -80,6 +81,8 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         lastMineSound = 0;
         lastWalkSound = 0;
         fallPeak = 0;
+        fallStartY = 0;
+        fallAirSince = 0;
         wasGrounded = true;
         busy = false;
         message = 'Gather timber with E · Mine the nearby iron · Visit your workbench';
@@ -113,8 +116,9 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 const foe = f as Phaser.Physics.Arcade.Sprite;
                 if (foe.getData('dying')) return;
                 const body = this.player.body as Phaser.Physics.Arcade.Body;
-                // Falling onto / past an enemy from above is not contact damage (felt like random fall damage).
-                if (body.velocity.y > 60 && this.player.y + 10 < foe.y) return;
+                // Landing on / falling past foes is not contact damage (common in tight caves).
+                if (body.velocity.y > 40 && this.player.y < foe.y) return;
+                if (this.player.y + 12 < foe.y) return;
                 this.damage(ENEMIES[foe.getData('kind') as Kind].damage, foe.x);
             });
             this.physics.add.overlap(this.player, this.hostile, (_p, s) => { const shot = s as Phaser.Physics.Arcade.Sprite; this.damage(shot.getData('damage'), shot.x); shot.destroy(); });
@@ -131,7 +135,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 read:()=>{const body=this.player.body as Phaser.Physics.Arcade.Body;return {x:this.player.x,y:this.player.y,vx:body.velocity.x,vy:body.velocity.y,grounded:body.blocked.down||body.touching.down,blockedLeft:body.blocked.left,blockedRight:body.blocked.right,health:this.health,mana:this.mana,status:this.status,clock:this.clock,chunks:this.chunks.active.size,bodies:this.chunks.bodyCount,fps:this.game.loop.actualFps,busy:this.busy,message:this.message,recall:this.recallStart,enemies:this.foes.getChildren().map(obj=>{const f=obj as Phaser.Physics.Arcade.Sprite;return {id:f.getData('id'),kind:f.getData('kind'),x:f.x,y:f.y,hp:f.getData('hp'),state:f.getData('state')};})};},
                 hold:keys=>{const next=new Set(keys);for(const key of next)if(!this.held.has(key))this.fresh.add(key);this.held=next;},
                 aim:(x,y)=>{this.cursor={x,y,known:true};},select:n=>{this.selected=n;},resume:()=>this.resume(),pause:()=>this.pause(),recall:()=>this.recall(),respawn:()=>this.respawn(),save:()=>this.save(),
-                encounter:(kind,x,y,id)=>{if(this.foes.countActive()<24)this.createEnemy(kind,x,y,id);}
+                encounter:(kind,x,y,id)=>{if(this.foes.countActive()<(store.world.settings.difficulty==='extreme'?55:24))this.createEnemy(kind,x,y,id);}
             });
         }
         drawBase() { const y = 22 * TILE, g = this.add.graphics().setDepth(2); g.fillStyle(0x1b3645); g.fillRect(6 * TILE, y - 104, 19 * TILE, 104); g.lineStyle(3, 0x83bcbb); g.strokeRect(6 * TILE, y - 104, 19 * TILE, 104); g.fillStyle(0x35515a); g.fillRect(6 * TILE, y - 104, 19 * TILE, 10); g.fillStyle(0x85eace); g.fillRect(8 * TILE, y - 65, 7, 60); for (const [x, name, color] of [[14, 'WORKBENCH', 0xcca176], [18, 'FORGE', 0xf0ae6d], [22, 'TERMINAL', 0x8dd8f3]] as const) {
@@ -170,9 +174,24 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             this.held.clear(); this.fresh.clear(); this.buffer = -1000; this.lastGround = -1000;
             this.jumped = false; this.knockUntil = 0; this.lastAttack = -1000; this.lastMagic = -1000;
             this.mining = {key: '', progress: 0}; this.cursor.known = false;
-            this.health = 100; this.mana = 100; this.hurtUntil = this.clock + 2000; this.recallStart = 0; this.fallPeak = 0; this.wasGrounded = true; this.shots.clear(true, true); this.hostile.clear(true, true); this.foes.clear(true, true); this.player.setVelocity(0).setAcceleration(0); this.player.setPosition(store.world.checkpoint.x, store.world.checkpoint.y); this.safe = { ...store.world.checkpoint }; this.status = 'playing'; this.tweens.resumeAll(); this.chunks.ensure(this.player.x, this.player.y); gameAudio.startBgm(); this.notify('Returned to the outpost. Inventory, coins, and skins retained.'); }
+            this.health = 100; this.mana = 100; this.hurtUntil = this.clock + 2000; this.recallStart = 0; this.fallPeak = 0; this.fallStartY = 0; this.fallAirSince = 0; this.wasGrounded = true; this.shots.clear(true, true); this.hostile.clear(true, true); this.foes.clear(true, true); this.player.setVelocity(0).setAcceleration(0); this.player.setPosition(store.world.checkpoint.x, store.world.checkpoint.y); this.safe = { ...store.world.checkpoint }; this.status = 'playing'; this.tweens.resumeAll(); this.chunks.ensure(this.player.x, this.player.y); gameAudio.startBgm(); this.notify('Returned to the outpost. Inventory, coins, and skins retained.'); }
+        setHealth(n: number) {
+            if (this.status === 'dead') return;
+            if (!Number.isFinite(n)) return;
+            this.health = Math.max(0, Math.min(99999, Math.floor(n)));
+            this.hurtUntil = this.clock + 400;
+            if (!this.health) {
+                this.status = 'dead';
+                this.held.clear();
+                this.physics.pause();
+                gameAudio.stopBgm();
+                this.notify('Signal lost. Respawn at the beacon; all possessions are retained.');
+            } else
+                this.notify(`Health set to ${this.health}.`);
+            this.emit();
+        }
         damage(n: number, x: number) { if (this.status !== 'playing' || this.clock < this.hurtUntil || this.nearBase())
-            return; this.health = Math.max(0, this.health - Math.ceil(n * (store.world.settings.difficulty === 'explorer' ? .7 : 1))); this.hurtUntil = this.clock + 1400; this.knockUntil = this.clock + 180; this.fallPeak = 0; this.player.setAccelerationX(0).setVelocity(this.player.x < x ? -170 : 170, -170); if (this.recallStart) {
+            return; this.health = Math.max(0, this.health - Math.ceil(n * (store.world.settings.difficulty === 'explorer' ? .7 : store.world.settings.difficulty === 'extreme' ? 1.45 : 1))); this.hurtUntil = this.clock + 1400; this.knockUntil = this.clock + 180; this.fallPeak = 0; this.fallStartY = this.player.y; this.fallAirSince = this.clock; this.wasGrounded = false; this.player.setAccelerationX(0).setVelocity(this.player.x < x ? -170 : 170, -170); if (this.recallStart) {
             this.recallStart = 0;
             this.notify('Recall interrupted by damage.');
         } this.burst(this.player.x, this.player.y, 0xff9b98); if (this.shake)
@@ -432,16 +451,22 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             });
         }
         spawn() {
-            if (this.foes.countActive() >= 20)
+            const extreme = store.world.settings.difficulty === 'extreme';
+            const cap = extreme ? 55 : 20;
+            if (this.foes.countActive() >= cap)
                 return;
             const w = store.world, cam = this.cameras.main.worldView;
             let spawned = 0;
+            const maxSpawn = extreme ? 10 : 3;
             for (const key of this.chunks.active.keys()) {
-                if (spawned >= 3 || this.foes.countActive() >= 20) break;
+                if (spawned >= maxSpawn || this.foes.countActive() >= cap) break;
                 const [cx, cy] = key.split(',').map(Number);
-                const slots = cy > 0 ? 3 : 2;
+                const inCave = cy > 0;
+                const slots = extreme
+                    ? (inCave ? 7 : 5)
+                    : (inCave ? 4 : 2);
                 for (let slot = 0; slot < slots; slot++) {
-                    if (this.foes.countActive() >= 20) break;
+                    if (this.foes.countActive() >= cap) break;
                     const id = `enemy:${key}:${slot}`;
                     if (w.defeated.includes(id) || this.foes.getChildren().some(f => (f as Phaser.Physics.Arcade.Sprite).getData('id') === id))
                         continue;
@@ -456,17 +481,35 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                         continue;
                     for (let n = 0; n < 7 && !solid(w, tx, ty + 1); n++)
                         ty++;
-                    const x = (tx + .5) * TILE, y = (ty + 1) * TILE - 23;
-                    if (Math.abs(x - 12 * TILE) < 580 || Phaser.Geom.Rectangle.Contains(Phaser.Geom.Rectangle.Clone(cam).setSize(cam.width + 100, cam.height + 100), x, y) || Math.hypot(x - this.player.x, y - this.player.y) > 1600 || solid(w, tx, ty) || solid(w, tx, ty - 1) || !solid(w, tx, ty + 1))
+                    const wantFly = inCave || extreme && hash(w.settings.seed, tx, ty, `fly-${slot}`) > .45;
+                    let x = (tx + .5) * TILE, y = (ty + 1) * TILE - 23;
+                    if (wantFly) {
+                        // Hover in open air above floor / inside cave pockets
+                        y = (ty + 1) * TILE - 23 - (28 + Math.floor(hash(w.settings.seed, tx, ty, `hover-${slot}`) * 70));
+                        if (solid(w, tx, Math.floor(y / TILE)) || solid(w, tx, Math.floor(y / TILE) - 1))
+                            continue;
+                    } else if (solid(w, tx, ty) || solid(w, tx, ty - 1) || !solid(w, tx, ty + 1))
+                        continue;
+                    const baseSafe = extreme ? 360 : 580;
+                    if (Math.abs(x - 12 * TILE) < baseSafe || Phaser.Geom.Rectangle.Contains(Phaser.Geom.Rectangle.Clone(cam).setSize(cam.width + 100, cam.height + 100), x, y) || Math.hypot(x - this.player.x, y - this.player.y) > 1600)
+                        continue;
+                    if (!wantFly && (solid(w, tx, ty) || solid(w, tx, ty - 1) || !solid(w, tx, ty + 1)))
                         continue;
                     const b = biome(w.settings, tx, ty);
-                    const roster: Kind[] = b === 'Crystal depths'
-                        ? ['caster', 'sentinel', 'drone', 'bomber', 'gunner', 'crawler']
-                        : b === 'Rust wastes'
-                            ? ['crawler', 'gunner', 'drone', 'bomber', 'hopper', 'sentinel']
-                            : cy > 0
-                                ? ['crawler', 'hopper', 'bomber', 'drone', 'gunner']
-                                : ['crawler', 'hopper', 'bomber', 'drone'];
+                    let roster: Kind[];
+                    if (extreme) {
+                        roster = inCave
+                            ? ['drone', 'wisp', 'skimmer', 'caster', 'bomber', 'gunner', 'sentinel', 'crawler', 'wisp', 'skimmer', 'drone']
+                            : ['crawler', 'hopper', 'bomber', 'drone', 'wisp', 'skimmer', 'gunner', 'caster', 'sentinel', 'drone', 'skimmer'];
+                    } else if (inCave || b === 'Crystal depths') {
+                        roster = ['caster', 'sentinel', 'drone', 'bomber', 'gunner', 'crawler', 'wisp', 'skimmer'];
+                    } else if (b === 'Rust wastes') {
+                        roster = ['crawler', 'gunner', 'drone', 'bomber', 'hopper', 'skimmer'];
+                    } else {
+                        roster = ['crawler', 'hopper', 'bomber', 'drone', 'wisp'];
+                    }
+                    if (wantFly) roster = roster.filter(k => FLYING.has(k));
+                    if (!roster.length) roster = ['drone', 'wisp'];
                     const kind = roster[Math.floor(hash(w.settings.seed, tx, ty, `roster-${slot}`) * roster.length)]!;
                     this.createEnemy(kind, x, y, id);
                     spawned++;
@@ -475,9 +518,9 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         }
         createEnemy(kind:Kind,x:number,y:number,id:string){
             const stats=ENEMIES[kind];const f=this.foes.create(x,y,stats.texture) as Phaser.Physics.Arcade.Sprite;
-            f.setSize(kind==='sentinel'?32:24,kind==='drone'?24:32);
+            f.setSize(kind==='sentinel'?32:kind==='skimmer'?30:24,kind==='drone'||kind==='wisp'?24:kind==='skimmer'?18:32);
             f.setData({id,kind,hp:stats.hp,homeX:x,homeY:y,state:'patrol',until:this.clock+1000,dir:-1,memory:0,lastSeen:x,stun:0,nextThink:this.clock+hash(store.world.settings.seed,x,y,'ai-phase')*100});
-            if(kind==='drone')(f.body as Phaser.Physics.Arcade.Body).setAllowGravity(false);
+            if(FLYING.has(kind))(f.body as Phaser.Physics.Arcade.Body).setAllowGravity(false);
         }
         ai() {
             for (const obj of this.foes.getChildren()) {
@@ -502,7 +545,10 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 f.clearTint();
                 f.setScale(1);
                 if (state === 'windup') {
-                    f.setVelocityX(0);
+                    if (FLYING.has(kind))
+                        f.setVelocity(0, 0);
+                    else
+                        f.setVelocityX(0);
                     f.setTint(0xffbc77);
                     f.setScale(1.08, .93);
                     if (this.clock < until)
@@ -553,14 +599,16 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                     continue;
                 }
                 if (state === 'recover' && this.clock < until) {
-                    if (kind === 'drone')
-                        f.setVelocityX(-direction * 60);
-                    else if (kind !== 'hopper')
+                    if (FLYING.has(kind)) {
+                        const hover = kind === 'wisp' ? 70 : kind === 'skimmer' ? 55 : 45;
+                        const targetY = this.player.y - hover;
+                        f.setVelocity(-direction * 60, Phaser.Math.Clamp((targetY - f.y) * 1.2, -50, 50));
+                    } else if (kind !== 'hopper')
                         f.setVelocityX(0);
                     continue;
                 }
                 if (sight && pursuit && kind !== 'crawler' && kind !== 'bomber' && this.clock >= until) {
-                    if (kind === 'hopper' || kind === 'sentinel' && dist < 120 || kind === 'caster' && dist < 350 || kind === 'gunner' && dist < 370 || kind === 'drone' && dist < 260) {
+                    if (kind === 'hopper' || kind === 'sentinel' && dist < 120 || kind === 'caster' && dist < 350 || kind === 'gunner' && dist < 370 || FLYING.has(kind) && dist < (kind === 'skimmer' ? 300 : 260)) {
                         f.setData({ state: 'windup', until: this.clock + (kind === 'sentinel' ? 700 : kind === 'caster' ? 850 : 500) });
                         continue;
                     }
@@ -574,15 +622,16 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                     if (Math.abs(f.x - home) > 100)
                         direction = Math.sign(home - f.x);
                 }
-                if (kind === 'drone') {
-                    const targetY = sight && pursuit ? this.player.y - 45 : f.getData('homeY') - 40;
-                    let vx = direction * p.speed, vy = Phaser.Math.Clamp((targetY - f.y) * 1.5, -65, 65);
+                if (FLYING.has(kind)) {
+                    const hover = kind === 'wisp' ? 70 : kind === 'skimmer' ? 55 : 45;
+                    const targetY = sight && pursuit ? this.player.y - hover : f.getData('homeY') - hover * .7;
+                    let vx = direction * p.speed, vy = Phaser.Math.Clamp((targetY - f.y) * 1.5, -75, 75);
                     if (!clearLine(store.world, f.x, f.y, f.x + direction * 45, f.y)) {
                         vx = 0;
                         vy = solid(store.world, Math.floor(f.x / TILE), Math.floor((f.y - 45) / TILE)) ? 45 : -45;
                     }
-                    if (Math.abs(f.y - f.getData('homeY')) > 200)
-                        vy = Math.sign(f.getData('homeY') - f.y) * 65;
+                    if (Math.abs(f.y - f.getData('homeY')) > 220)
+                        vy = Math.sign(f.getData('homeY') - f.y) * 70;
                     f.setVelocity(vx, vy);
                 }
                 else {
@@ -672,24 +721,31 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             this.clock += Math.min(delta, 50);
             const m = MOVEMENT, b = this.player.body as Phaser.Physics.Arcade.Body, grounded = b.blocked.down || b.touching.down;
             if (!grounded) {
+                if (this.wasGrounded) {
+                    this.fallStartY = this.player.y;
+                    this.fallAirSince = this.clock;
+                    this.fallPeak = 0;
+                }
                 if (b.velocity.y > this.fallPeak) this.fallPeak = b.velocity.y;
             } else if (!this.wasGrounded) {
-                // Only extreme drops hurt — normal jumps / short falls never do.
-                if (this.fallPeak > 720 && this.clock >= this.hurtUntil && !this.nearBase()) {
-                    const amount = Math.min(35, Math.floor((this.fallPeak - 720) / 12));
-                    if (amount > 0) {
-                        this.health = Math.max(0, this.health - amount);
-                        this.hurtUntil = this.clock + 1400;
-                        this.burst(this.player.x, this.player.y + 18, 0xffb889);
-                        this.notify(this.health ? 'Hard landing.' : 'Signal lost. Respawn at the beacon; all possessions are retained.');
-                        if (!this.health) {
-                            this.status = 'dead';
-                            this.held.clear();
-                            this.physics.pause();
-                            gameAudio.stopBgm();
-                        }
-                        this.emit();
+                // Require a real drop + hard impact velocity so cave hops / knockback landings don't chip health.
+                const drop = this.player.y - this.fallStartY;
+                const airMs = this.clock - this.fallAirSince;
+                const minDrop = store.world.settings.difficulty === 'extreme' ? 8 * TILE : 10 * TILE;
+                const minPeak = store.world.settings.difficulty === 'extreme' ? 520 : 560;
+                if (drop > minDrop && this.fallPeak > minPeak && airMs > 280 && this.clock >= this.hurtUntil && !this.nearBase()) {
+                    const amount = Math.min(10, Math.max(1, Math.floor((drop - minDrop) / TILE) + 1));
+                    this.health = Math.max(0, this.health - amount);
+                    this.hurtUntil = this.clock + 1400;
+                    this.burst(this.player.x, this.player.y + 18, 0xffb889);
+                    this.notify(this.health ? `Hard landing (−${amount}).` : 'Signal lost. Respawn at the beacon; all possessions are retained.');
+                    if (!this.health) {
+                        this.status = 'dead';
+                        this.held.clear();
+                        this.physics.pause();
+                        gameAudio.stopBgm();
                     }
+                    this.emit();
                 }
                 this.fallPeak = 0;
             }
@@ -730,7 +786,24 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             this.player.setAlpha(hurt && Math.floor(this.clock / 80) % 2 ? .45 : 1);
             this.player.setTexture(`${store.data.profile.equipped}-${hurt ? 'hurt' : !grounded ? b.velocity.y < 0 ? 'air' : 'fall' : direction ? `run${Math.floor(this.clock / 100) % 2}` : 'idle'}`);
             const item = store.world.inventory[this.selected]?.id;
-            this.weapon.setTexture(item === 'sword' ? 'sword-tool' : item === 'staff' ? 'staff-tool' : ['pickaxe', 'drill'].includes(item ?? '') ? 'pick-tool' : 'gun-tool').setVisible(!!item);
+            const heldTex = !item ? null
+                : item === 'sword' ? 'sword-tool'
+                : item === 'staff' ? 'staff-tool'
+                : item === 'pickaxe' || item === 'drill' ? 'pick-tool'
+                : item === 'carbine' ? 'carbine-tool'
+                : item === 'blaster' ? 'gun-tool'
+                : item === 'dirt' ? 'held-dirt'
+                : item === 'stone' ? 'held-stone'
+                : item === 'brick' ? 'held-brick'
+                : item === 'torch' ? 'held-torch'
+                : item === 'tonic' ? 'held-tonic'
+                : 'held-resource';
+            if (heldTex) {
+                this.weapon.setTexture(heldTex).setVisible(true);
+                this.weapon.setOrigin(item === 'sword' || item === 'staff' || item === 'blaster' || item === 'carbine' ? .15 : .5, .5);
+            } else {
+                this.weapon.setVisible(false);
+            }
             const angle = this.cursor.known ? Math.atan2(this.cursor.y - this.player.y, this.cursor.x - this.player.x) : this.facing < 0 ? Math.PI : 0;
             this.weapon.setPosition(this.player.x + this.facing * 10, this.player.y + 3).setRotation(angle).setFlipY(Math.cos(angle) < 0);
             const { x, y } = this.targetTile();
@@ -771,7 +844,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 this.ai();
                 this.lastAi = this.clock;
             }
-            if (this.clock - this.lastSpawn > 400) {
+            if (this.clock - this.lastSpawn > (store.world.settings.difficulty === 'extreme' ? 140 : 400)) {
                 this.spawn();
                 this.lastSpawn = this.clock;
             }
@@ -803,18 +876,24 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
     const keydown = (e: KeyboardEvent) => { if (document.activeElement !== host || !scene)
         return; if (['Space', 'ArrowLeft', 'ArrowRight', 'KeyA', 'KeyD', 'KeyJ', 'KeyE', 'KeyF', 'KeyH', 'Escape', 'KeyR', 'KeyI', 'KeyC', 'KeyM'].includes(e.code) || /^Digit[1-8]$/.test(e.code))
         e.preventDefault(); if (e.repeat)
-        return; if (/^Digit[1-8]$/.test(e.code)) {
+        return;
+    // Continue / death screen: only allow resume (Escape) or respawn (R). Block menus & hotbar.
+    if (scene.status === 'paused') {
+        if (e.code === 'Escape') scene.resume();
+        return;
+    }
+    if (scene.status === 'dead') {
+        if (e.code === 'KeyR') scene.respawn();
+        return;
+    }
+    if (scene.status !== 'playing')
+        return;
+    if (/^Digit[1-8]$/.test(e.code)) {
         scene.selected = Number(e.code.slice(-1)) - 1;
         scene.emit();
         return;
     } if (e.code === 'Escape') {
-        if (scene.status === 'paused')
-            scene.resume();
-        else
-            scene.pause();
-        return;
-    } if (e.code === 'KeyR' && scene.status === 'dead') {
-        scene.respawn();
+        scene.pause();
         return;
     } if (['KeyI', 'KeyC', 'KeyM'].includes(e.code)) {
         scene.pause();
@@ -846,5 +925,5 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             scene.selected = n;
             scene.emit();
         } }, recall: () => { host.focus(); scene?.resume(); scene?.recall(); }, respawn: () => { host.focus(); scene?.respawn(); }, save, setShake: b => { if (scene)
-            scene.shake = b; }, destroy: () => { disposed = true; gameAudio.stopBgm(); window.removeEventListener('keydown', keydown); window.removeEventListener('keyup', keyup); window.removeEventListener('pointerup', up); window.removeEventListener('blur', blur); document.removeEventListener('visibilitychange', hidden); host.removeEventListener('pointermove', move); host.removeEventListener('pointerdown', down); host.removeEventListener('contextmenu', context); game.destroy(true); } };
+            scene.shake = b; }, setHealth: n => { scene?.setHealth(n); }, destroy: () => { disposed = true; gameAudio.stopBgm(); window.removeEventListener('keydown', keydown); window.removeEventListener('keyup', keyup); window.removeEventListener('pointerup', up); window.removeEventListener('blur', blur); document.removeEventListener('visibilitychange', hidden); host.removeEventListener('pointermove', move); host.removeEventListener('pointerdown', down); host.removeEventListener('contextmenu', context); game.destroy(true); } };
 }

@@ -33,6 +33,63 @@ function SkinPortrait({ id }: { id: SkinId }) {
     );
 }
 
+type TutorialKind = 'move' | 'mine' | 'fight' | 'gather' | 'menu' | 'home';
+
+function TutorialClip({ kind }: { kind: TutorialKind }) {
+    return (
+        <div className={`tutorial-clip tutorial-clip-${kind}`} aria-hidden>
+            <div className="tutorial-stage">
+                <span className="tut-sky" />
+                <span className="tut-ground" />
+                {kind === 'move' && (
+                    <>
+                        <span className="tut-actor" />
+                        <span className="tut-key tut-key-a">A</span>
+                        <span className="tut-key tut-key-d">D</span>
+                    </>
+                )}
+                {kind === 'mine' && (
+                    <>
+                        <span className="tut-block" />
+                        <span className="tut-actor" />
+                        <span className="tut-pick" />
+                        <span className="tut-spark" />
+                    </>
+                )}
+                {kind === 'fight' && (
+                    <>
+                        <span className="tut-foe" />
+                        <span className="tut-actor" />
+                        <span className="tut-bolt" />
+                    </>
+                )}
+                {kind === 'gather' && (
+                    <>
+                        <span className="tut-tree" />
+                        <span className="tut-actor" />
+                        <span className="tut-leaf" />
+                    </>
+                )}
+                {kind === 'menu' && (
+                    <>
+                        <span className="tut-panel" />
+                        <span className="tut-tab tut-tab-i">I</span>
+                        <span className="tut-tab tut-tab-c">C</span>
+                        <span className="tut-tab tut-tab-m">M</span>
+                    </>
+                )}
+                {kind === 'home' && (
+                    <>
+                        <span className="tut-beacon" />
+                        <span className="tut-actor" />
+                        <span className="tut-ring" />
+                    </>
+                )}
+            </div>
+        </div>
+    );
+}
+
 const EMPTY: SandboxHud = { health: 100, mana: 100, status: 'paused', biome: 'Verdant frontier', selected: 1, message: 'Explore Lumen frontier', nearBase: true, fps: 0, chunks: 0, enemies: 0, bodies: 0, x: 288, y: 504, recall: 0 };
 
 export default function App() {
@@ -55,6 +112,9 @@ export default function App() {
     const [showSearch, setShowSearch] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [hudMenuOpen, setHudMenuOpen] = useState(false);
+    const [showTutorial, setShowTutorial] = useState(false);
+    const [deleteTarget, setDeleteTarget] = useState('');
+
     const host = useRef<HTMLDivElement>(null);
     const frame = useRef<HTMLDivElement>(null);
     const engine = useRef<SandboxController | null>(null);
@@ -112,7 +172,92 @@ export default function App() {
     };
     const closeSearch = () => {
         setShowSearch(false);
+        setSearchQuery('');
         if (!menu) engine.current?.resume();
+    };
+    const GIVE_ALIASES: Record<string, ItemId> = {
+        iron_bar: 'bar', ironbar: 'bar', bar: 'bar',
+        iron_ore: 'iron', ironore: 'iron', iron: 'iron',
+        timber: 'wood', wood: 'wood', logs: 'wood',
+        healing_herb: 'herb', herb: 'herb',
+        crystal_shard: 'crystal', crystal: 'crystal',
+        scrap_metal: 'scrap', scrap: 'scrap',
+        field_tonic: 'tonic', tonic: 'tonic',
+        lumen_torch: 'torch', torch: 'torch',
+        outpost_block: 'brick', brick: 'brick',
+        dirt: 'dirt', soil: 'dirt', stone: 'stone',
+        pickaxe: 'pickaxe', blaster: 'blaster', sword: 'sword',
+        staff: 'staff', drill: 'drill', carbine: 'carbine',
+    };
+    const runSearch = () => {
+        const q = searchQuery.trim();
+        const setCmd = /^\/set\s+([a-z_]+)\s+(-?\d+)\s*$/i.exec(q);
+        if (setCmd) {
+            const key = setCmd[1]!.toLowerCase();
+            const value = Number(setCmd[2]);
+            if (key === 'health' || key === 'hp') {
+                if (!Number.isInteger(value) || value < 0) {
+                    setNotice('Health must be a whole number ≥ 0.');
+                    closeSearch();
+                    return;
+                }
+                engine.current?.setHealth(value);
+                setNotice(`Health set to ${Math.min(99999, value)}.`);
+                closeSearch();
+                return;
+            }
+            setNotice(`Unknown /set target "${key}". Try /set health 1000`);
+            closeSearch();
+            return;
+        }
+        const give = /^\/give\s+([a-z0-9_]+)\s+(-?\d+)\s*$/i.exec(q);
+        if (give) {
+            const raw = give[1]!.toLowerCase();
+            const amount = Number(give[2]);
+            if (!Number.isInteger(amount) || amount === 0) {
+                setNotice('Amount must be a non-zero whole number.');
+                closeSearch();
+                return;
+            }
+            if (raw === 'coins' || raw === 'coin' || raw === 'gold') {
+                void act(async () => {
+                    const msg = await store!.transact((_b, w) => {
+                        const next = w.coins + amount;
+                        if (next < 0)
+                            throw new Error(`Not enough coins (have ${w.coins}).`);
+                        w.coins = next;
+                        return amount > 0
+                            ? `Gave ${amount} coins · balance ${w.coins}`
+                            : `Removed ${-amount} coins · balance ${w.coins}`;
+                    });
+                    return msg;
+                });
+                closeSearch();
+                return;
+            }
+            if (amount < 1) {
+                setNotice('Item amounts must be positive. Use /give coins -N to spend coins.');
+                closeSearch();
+                return;
+            }
+            const id = GIVE_ALIASES[raw] ?? (raw in ITEMS ? raw as ItemId : null);
+            if (!id) {
+                setNotice(`Unknown item "${raw}".`);
+                closeSearch();
+                return;
+            }
+            void act(async () => {
+                const msg = await store!.transact((_b, w) => {
+                    if (!add(w.inventory, id, amount))
+                        throw new Error('Inventory full — clear space first.');
+                    return `Gave ${amount}× ${ITEMS[id].name}`;
+                });
+                return msg;
+            });
+            closeSearch();
+            return;
+        }
+        closeSearch();
     };
 
     useEffect(() => {
@@ -136,9 +281,14 @@ export default function App() {
             gameAudio.stopBgm();
             setHudMenuOpen(false);
             setShowSearch(false);
+            setShowTutorial(false);
             setMenu(null);
         }
     }, [gameState]);
+
+    useEffect(() => {
+        if (hud.status !== 'playing') setHudMenuOpen(false);
+    }, [hud.status]);
 
     useEffect(() => {
         if (!hudMenuOpen) return;
@@ -152,32 +302,50 @@ export default function App() {
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key !== 'Escape' || !showSearch) return;
+            if (e.key !== 'Escape') return;
+            if (showTutorial) {
+                e.preventDefault();
+                setShowTutorial(false);
+                if (!menu) engine.current?.resume();
+                return;
+            }
+            if (!showSearch) return;
             e.preventDefault();
             setShowSearch(false);
             if (!menu) engine.current?.resume();
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [showSearch, menu]);
+    }, [showSearch, showTutorial, menu]);
 
     if (!store)
         return <main className="loading"><p className="eyebrow">GAMEFORGE / LUMEN FRONTIER</p><h1>{error ? 'Your save is safe.' : 'Preparing your expedition…'}</h1><p>{error || 'Opening local world storage.'}</p>{error && <p>Close other game tabs and reload. Incompatible saves are never silently replaced.</p>}</main>;
 
-    const world = store.world, profile = store.data.profile;
+    const profile = store.data.profile;
+    const worldsList = Object.values(store.data.worlds).sort((a, b) => b.created - a.created);
+    const world = store.data.worlds[store.data.active];
     const transact = (fn: Parameters<SaveStore['transact']>[0]) => act(() => store.transact(fn));
     const deleteWorld = (id: string) => act(async () => {
         await engine.current?.save().catch(() => { });
+        let emptied = false;
         await store.transact(b => {
-            const ids = Object.keys(b.worlds);
-            if (ids.length <= 1)
-                throw new Error('Keep at least one world. Create another before deleting this one.');
             if (!b.worlds[id])
                 throw new Error('That world is already gone.');
             delete b.worlds[id];
-            if (b.active === id)
-                b.active = Object.keys(b.worlds)[0]!;
+            const remaining = Object.keys(b.worlds);
+            if (remaining.length === 0) {
+                b.active = '';
+                emptied = true;
+            } else if (b.active === id)
+                b.active = remaining[0]!;
         });
+        if (emptied) {
+            gameAudio.stopBgm();
+            setMenu(null);
+            setHudMenuOpen(false);
+            setGameState('worlds');
+            return 'All worlds deleted';
+        }
         return 'World deleted';
     });
 
@@ -212,15 +380,17 @@ export default function App() {
         );
     }
 
-    if (gameState === 'worlds') {
-        const worlds = Object.values(store.data.worlds).sort((a, b) => b.created - a.created);
+    if (gameState === 'worlds' || !world) {
+        const worlds = worldsList;
         return (
             <main className="worlds-select">
                 <header className="worlds-select-header">
                     <div>
                         <p className="eyebrow">GAMEFORGE / LUMEN FRONTIER</p>
-                        <h1>Choose your world</h1>
-                        <p>Worlds keep their own items, coins, objectives, and terrain. Skins are shared across all expeditions.</p>
+                        <h1>{worlds.length ? 'Choose your world' : 'Create your first world'}</h1>
+                        <p>{worlds.length
+                            ? 'Worlds keep their own items, coins, objectives, and terrain. Skins are shared across all expeditions.'
+                            : 'No worlds remain. Create a new expedition to start exploring again. Skins you unlocked are still saved.'}</p>
                     </div>
                     <button type="button" onClick={() => setGameState('home')}>← Back</button>
                 </header>
@@ -231,7 +401,7 @@ export default function App() {
                             <div>
                                 <p className="eyebrow">{w.id === active ? 'ACTIVE SAVE' : 'SAVED WORLD'}</p>
                                 <h2>{w.name}</h2>
-                                <p>{w.settings.difficulty === 'explorer' ? 'Explorer' : 'Standard'} · seed {w.settings.seed}</p>
+                                <p>{w.settings.difficulty === 'explorer' ? 'Explorer' : w.settings.difficulty === 'extreme' ? 'EXTREME' : 'Standard'} · seed {w.settings.seed}</p>
                                 <p className="world-meta">◈ {w.coins} coins · depth progress {Object.keys(w.explored).length} chunks · created {new Date(w.created).toLocaleDateString()}</p>
                             </div>
                             <div className="world-card-actions">
@@ -248,18 +418,6 @@ export default function App() {
                                 >
                                     {w.id === active ? 'Continue this world →' : 'Enter this world →'}
                                 </button>
-                                <button
-                                    type="button"
-                                    className="danger"
-                                    disabled={pending || worlds.length <= 1}
-                                    title={worlds.length <= 1 ? 'Create another world before deleting the last one' : `Delete ${w.name}`}
-                                    onClick={() => {
-                                        if (!confirm(`Delete world “${w.name}”? This cannot be undone.`)) return;
-                                        void deleteWorld(w.id);
-                                    }}
-                                >
-                                    Delete world
-                                </button>
                             </div>
                         </article>
                     ))}
@@ -267,13 +425,14 @@ export default function App() {
 
                 <section className="worlds-create-panel">
                     <h2>Create a new world</h2>
-                    <p>Existing worlds are kept. Terrain settings lock in at creation. You can delete unused worlds anytime.</p>
+                    <p>Existing worlds are kept. Terrain settings lock in at creation.</p>
                     <div className="generation-form">
                         <label>Seed<input value={settings.seed} maxLength={80} onChange={e => setSettings({ ...settings, seed: e.target.value })} /></label>
                         <label>Difficulty
                             <select value={settings.difficulty} onChange={e => setSettings({ ...settings, difficulty: e.target.value as WorldSettings['difficulty'] })}>
                                 <option value="explorer">Explorer</option>
                                 <option value="standard">Standard</option>
+                                <option value="extreme">EXTREME</option>
                             </select>
                         </label>
                         {(['roughness', 'caves', 'abundance'] as const).map(key => (
@@ -289,6 +448,38 @@ export default function App() {
                         });
                         setGameState('playing');
                     })}>Create & start expedition →</button>
+
+                    {worlds.length > 0 && (
+                        <div className="world-delete-panel">
+                            <h3>Delete a world</h3>
+                            <p>Choose a save to remove permanently. You can delete every world.</p>
+                            <div className="world-delete-row">
+                                <select
+                                    value={deleteTarget}
+                                    disabled={pending}
+                                    onChange={e => setDeleteTarget(e.target.value)}
+                                >
+                                    <option value="">Select a world…</option>
+                                    {worlds.map(w => (
+                                        <option key={w.id} value={w.id}>{w.name}{w.id === active ? ' (current)' : ''}</option>
+                                    ))}
+                                </select>
+                                <button
+                                    type="button"
+                                    className="danger"
+                                    disabled={pending || !deleteTarget}
+                                    onClick={() => {
+                                        const w = worlds.find(x => x.id === deleteTarget);
+                                        if (!w) return;
+                                        if (!confirm(`Delete world “${w.name}”? This cannot be undone.`)) return;
+                                        void deleteWorld(w.id).then(() => setDeleteTarget(''));
+                                    }}
+                                >
+                                    Delete selected
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </section>
 
                 {notice && <p className="worlds-notice" role="status">{notice}</p>}
@@ -298,7 +489,7 @@ export default function App() {
 
     return (
         <main className="sandbox-app">
-            <header className="sandbox-header">
+            <header className="sandbox-header" style={hud.status !== 'playing' && !menu && !showSearch && !showTutorial ? { pointerEvents: 'none' } : undefined}>
                 <div className="brand">GAME<span>FORGE</span><small>LUMEN FRONTIER · A WORLD TO DISCOVER</small></div>
                 <div className="header-right">
                     <span className="ai-status">AI generation not connected</span>
@@ -307,7 +498,7 @@ export default function App() {
             </header>
             
             <section className="world-shell" ref={frame}>
-                <div className="world-hud">
+                <div className="world-hud" style={hud.status !== 'playing' && !menu && !showSearch && !showTutorial ? { pointerEvents: 'none' } : undefined}>
                     <div className="hud-menu-container" style={{ position: 'relative' }}>
                         <button 
                             type="button"
@@ -320,6 +511,17 @@ export default function App() {
                         </button>
                         {hudMenuOpen && (
                             <div className="hud-dropdown" role="menu">
+                                <button
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() => {
+                                        setHudMenuOpen(false);
+                                        engine.current?.pause();
+                                        setShowTutorial(true);
+                                    }}
+                                >
+                                    How to Play
+                                </button>
                                 <button
                                     type="button"
                                     role="menuitem"
@@ -352,7 +554,7 @@ export default function App() {
                     {/* Top Right Menu */}
                     <div className="vital">
                         <span>HEALTH <b>{hud.health}</b></span>
-                        <meter min="0" max="100" value={hud.health} />
+                        <meter min="0" max={Math.max(100, hud.health)} value={hud.health} />
                     </div>
 
                     <div className="vital mana">
@@ -385,40 +587,62 @@ export default function App() {
                                 <input 
                                     autoFocus 
                                     style={{ flex: 1, padding: '15px', fontSize: '1.5rem', borderRadius: '8px', border: 'none' }} 
-                                    placeholder="Search for something..." 
+                                    placeholder="Search…"
                                     value={searchQuery}
                                     onChange={e => setSearchQuery(e.target.value)}
-                                    onKeyDown={e => e.key === 'Enter' && closeSearch()}
+                                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); runSearch(); } }}
                                 />
                                 <button type="button" style={{ padding: '0 20px', fontSize: '1.5rem', borderRadius: '8px', cursor: 'pointer' }} onClick={closeSearch}>✕</button>
                             </div>
                         </div>
                     )}
 
+                    {showTutorial && (
+                        <div className="tutorial-overlay" role="dialog" aria-label="How to play">
+                            <section className="tutorial-card">
+                                <header>
+                                    <p className="eyebrow">FIELD MANUAL</p>
+                                    <h2>How to play</h2>
+                                    <button type="button" onClick={() => { setShowTutorial(false); if (!menu) engine.current?.resume(); }}>Close ×</button>
+                                </header>
+                                <div className="tutorial-grid">
+                                    <article>
+                                        <TutorialClip kind="move" />
+                                        <h3>Move</h3>
+                                        <p>A/D or arrow keys walk. Space jumps. Hold still near the outpost for safety.</p>
+                                    </article>
+                                    <article>
+                                        <TutorialClip kind="mine" />
+                                        <h3>Mine & place</h3>
+                                        <p>Select pickaxe, aim with mouse, hold J / click to mine. F / right-click places blocks.</p>
+                                    </article>
+                                    <article>
+                                        <TutorialClip kind="fight" />
+                                        <h3>Fight</h3>
+                                        <p>Blaster, carbine, sword, and staff fire toward your mouse. Bombers explode on death.</p>
+                                    </article>
+                                    <article>
+                                        <TutorialClip kind="gather" />
+                                        <h3>Gather</h3>
+                                        <p>Hold E on trees (~1.2s) and plants (1s). Tap E at chests or the outpost stations.</p>
+                                    </article>
+                                    <article>
+                                        <TutorialClip kind="menu" />
+                                        <h3>Menus</h3>
+                                        <p>I inventory · C crafting · M map · Escape pauses · Hotbar 1–8 selects gear.</p>
+                                    </article>
+                                    <article>
+                                        <TutorialClip kind="home" />
+                                        <h3>Recall</h3>
+                                        <p>Hold still and press H to recall home. Damage cancels recall. Fall damage caps at 10.</p>
+                                    </article>
+                                </div>
+                            </section>
+                        </div>
+                    )}
+
                     {import.meta.env.DEV && debug && <div className="debug">{hud.fps} FPS · {hud.chunks}/15 chunks · {hud.enemies}/12 enemies · {hud.bodies} terrain bodies · {Math.floor(hud.x)},{Math.floor(hud.y)}</div>}
                     
-                    {!menu && !showSearch && hud.status !== 'playing' && (
-    <div className="overlay" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'auto', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' }}>
-        <div style={{ position: 'relative', zIndex: 10000, pointerEvents: 'auto', textAlign: 'center' }}>
-            <p className="eyebrow">{hud.status === 'dead' ? 'BEACON SIGNAL RECEIVED' : 'LUMEN OUTPOST / EXPEDITION PAUSED'}</p>
-            <h2 style={{ color: 'white' }}>{hud.status === 'dead' ? 'Your journey continues.' : 'A strange new frontier.'}</h2>
-            <p style={{ color: 'white' }}>{hud.status === 'dead' ? 'Respawn at the outpost. Your inventory, coins, and skins are retained.' : 'Explore living hills and buried ruins. Gather, craft, and make this planet your own.'}</p>
-            <button 
-                type="button"
-                className="primary" 
-                style={{ position: 'relative', zIndex: 10001, pointerEvents: 'auto', cursor: 'pointer', background: '#62dfc3', color: '#101d2b', fontWeight: 'bold', padding: '1rem 2rem', fontSize: '1.2rem', border: 'none', borderRadius: '8px' }} 
-                onPointerDown={e => e.preventDefault()}
-                onClick={() => { 
-                    if (hud.status === 'dead') engine.current?.respawn();
-                    else engine.current?.resume();
-                }}
-            >
-                {hud.status === 'dead' ? 'Return to checkpoint · R' : 'Continue expedition →'}
-            </button>
-            <p className="start-tip">E gathers trees and herbs · J uses your selected tool · 1–8 selects equipment</p>
-        </div>
-    </div>
-                    )}
                     {menu && (
                         <div className="menu-shade">
                             <section ref={dialog} tabIndex={-1} className="game-menu" aria-label={`${menu} panel`}>
@@ -589,25 +813,42 @@ export default function App() {
                                             <p>Worlds store their own items, coins, objectives, and terrain changes. Skins are shared. Saves live in this browser only; they are not cloud-synced.</p>
                                             <div className="world-list">
                                                 {Object.values(store.data.worlds).map(w => (
-                                                    <div key={w.id} className="world-row">
-                                                        <button disabled={w.id === active || pending} onClick={() => void act(async () => {
-                                                            await engine.current?.save();
-                                                            await store.transact(b => { b.active = w.id; });
-                                                            setMenu(null);
-                                                        })}>{w.name} {w.id === active ? '· Current' : '· Load world'}</button>
-                                                        <button
-                                                            type="button"
-                                                            className="danger"
-                                                            disabled={pending || Object.keys(store.data.worlds).length <= 1}
-                                                            onClick={() => {
-                                                                if (!confirm(`Delete world “${w.name}”? This cannot be undone.`)) return;
-                                                                void deleteWorld(w.id).then(() => {
-                                                                    if (w.id === active) setMenu(null);
-                                                                });
-                                                            }}
-                                                        >Delete</button>
-                                                    </div>
+                                                    <button key={w.id} disabled={w.id === active || pending} onClick={() => void act(async () => {
+                                                        await engine.current?.save();
+                                                        await store.transact(b => { b.active = w.id; });
+                                                        setMenu(null);
+                                                    })}>{w.name} {w.id === active ? '· Current' : '· Load world'}</button>
                                                 ))}
+                                            </div>
+                                            <div className="world-delete-panel in-menu">
+                                                <h3>Delete a world</h3>
+                                                <p>You can delete every world. Deleting the last one returns you to world select.</p>
+                                                <div className="world-delete-row">
+                                                    <select
+                                                        value={deleteTarget}
+                                                        disabled={pending}
+                                                        onChange={e => setDeleteTarget(e.target.value)}
+                                                    >
+                                                        <option value="">Select a world…</option>
+                                                        {Object.values(store.data.worlds).map(w => (
+                                                            <option key={w.id} value={w.id}>{w.name}{w.id === active ? ' (current)' : ''}</option>
+                                                        ))}
+                                                    </select>
+                                                    <button
+                                                        type="button"
+                                                        className="danger"
+                                                        disabled={pending || !deleteTarget}
+                                                        onClick={() => {
+                                                            const w = Object.values(store.data.worlds).find(x => x.id === deleteTarget);
+                                                            if (!w) return;
+                                                            if (!confirm(`Delete world “${w.name}”? This cannot be undone.`)) return;
+                                                            void deleteWorld(w.id).then(() => {
+                                                                setDeleteTarget('');
+                                                                if (w.id === active) setMenu(null);
+                                                            });
+                                                        }}
+                                                    >Delete selected</button>
+                                                </div>
                                             </div>
                                             <details>
                                                 <summary>Create a new world · existing worlds are kept</summary>
@@ -617,6 +858,7 @@ export default function App() {
                                                         <select value={settings.difficulty} onChange={e => setSettings({ ...settings, difficulty: e.target.value as WorldSettings['difficulty'] })}>
                                                             <option value="explorer">Explorer</option>
                                                             <option value="standard">Standard</option>
+                                                            <option value="extreme">EXTREME</option>
                                                         </select>
                                                     </label>
                                                     {(['roughness', 'caves', 'abundance'] as const).map(key => (
@@ -631,7 +873,6 @@ export default function App() {
                                                         });
                                                         setMenu(null);
                                                     })}>Create new world</button>
-                                                    <p className="world-delete-hint">To remove a world, use Delete next to it in the list above.</p>
                                                 </div>
                                             </details>
                                             <p>Terrain settings are fixed once a world is created. New terrain settings require a new world.</p>
@@ -673,7 +914,7 @@ export default function App() {
                                         <>
                                             <label className="check"><input type="checkbox" checked={shake} onChange={e => setShake(e.target.checked)} />Camera shake</label>
                                             {import.meta.env.DEV && <label className="check"><input type="checkbox" checked={debug} onChange={e => setDebug(e.target.checked)} />Show performance overlay</label>}
-                                            <p>Controls: A/D or arrows move; Space jumps; J or left click attacks/mines; F or right click places; Hold E gathers trees (3s) and plants (1s); E opens chests/outpost; 1–8 selects; H recalls; I inventory; C crafting; M map; Escape pauses.</p>
+                                            <p>Controls: A/D or arrows move; Space jumps; J or left click attacks/mines; F or right click places; Hold E gathers trees (~1.2s) and plants (1s); E opens chests/outpost; 1–8 selects; H recalls; I inventory; C crafting; M map; Escape pauses.</p>
                                             <button onClick={() => void act(async () => { await engine.current?.save(); return 'Saved to this browser'; })}>Save now</button>
                                         </>
                                     )}
@@ -684,7 +925,7 @@ export default function App() {
                     )}
                 </div>
                 
-                <div className="hotbar">
+                <div className="hotbar" style={hud.status !== 'playing' && !menu && !showSearch && !showTutorial ? { pointerEvents: 'none' } : undefined}>
                     {world.inventory.slice(0, 8).map((s, i) => (
                         <button key={i} className={hud.selected === i ? 'selected' : ''} onPointerDown={e => e.preventDefault()} onClick={() => engine.current?.select(i)} title={s ? `${ITEMS[s.id].name} ×${s.count} — ${ITEMS[s.id].description}` : 'Empty hotbar slot'}>
                             <kbd>{i + 1}</kbd>
@@ -698,9 +939,43 @@ export default function App() {
                     <span>✦</span>
                     {hud.recall > 0 ? `Recall ${Math.round(hud.recall * 100)}%` : notice && !menu ? notice : hud.message}
                 </div>
+
+                {!menu && !showSearch && !showTutorial && hud.status !== 'playing' && (
+                    <div
+                        className="continue-overlay"
+                        role="dialog"
+                        aria-label={hud.status === 'dead' ? 'Respawn' : 'Continue Expedition'}
+                        onPointerDown={e => e.stopPropagation()}
+                        style={{
+                            position: 'absolute', inset: 0, zIndex: 20000,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            background: 'rgba(0,0,0,0.72)', pointerEvents: 'auto',
+                        }}
+                    >
+                        <div style={{ position: 'relative', zIndex: 20001, textAlign: 'center', maxWidth: 520, padding: '0 24px', pointerEvents: 'auto' }}>
+                            <p className="eyebrow">{hud.status === 'dead' ? 'BEACON SIGNAL RECEIVED' : 'LUMEN OUTPOST / EXPEDITION PAUSED'}</p>
+                            <h2 style={{ color: 'white' }}>{hud.status === 'dead' ? 'Your journey continues.' : 'A strange new frontier.'}</h2>
+                            <p style={{ color: 'white' }}>{hud.status === 'dead' ? 'Respawn at the outpost. Your inventory, coins, and skins are retained.' : 'Explore living hills and buried ruins. Gather, craft, and make this planet your own.'}</p>
+                            <button
+                                type="button"
+                                className="primary"
+                                style={{ position: 'relative', zIndex: 20002, pointerEvents: 'auto', cursor: 'pointer', background: '#62dfc3', color: '#101d2b', fontWeight: 'bold', padding: '1rem 2rem', fontSize: '1.2rem', border: 'none', borderRadius: '8px' }}
+                                onPointerDown={e => e.preventDefault()}
+                                onClick={() => {
+                                    setHudMenuOpen(false);
+                                    if (hud.status === 'dead') engine.current?.respawn();
+                                    else engine.current?.resume();
+                                }}
+                            >
+                                {hud.status === 'dead' ? 'Return to checkpoint · R' : 'Continue Expedition'}
+                            </button>
+                            <p className="start-tip">E gathers trees and herbs · J uses your selected tool · 1–8 selects equipment</p>
+                        </div>
+                    </div>
+                )}
             </section>
             
-            <nav className="game-nav">
+            <nav className="game-nav" style={hud.status !== 'playing' && !menu && !showSearch && !showTutorial ? { pointerEvents: 'none' } : undefined}>
                 {([['inventory', 'Inventory · I'], ['crafting', 'Crafting · C'], ['skins', 'Skins'], ['objectives', 'Earn coins'], ['shop', 'Sell resources'], ['map', 'Map · M'], ['settings', 'Settings']] as const).map(([id, title]) => (
                     <button key={id} onClick={() => open(id)}>{title}</button>
                 ))}

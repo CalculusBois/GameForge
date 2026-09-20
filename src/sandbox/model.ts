@@ -5,13 +5,13 @@ export type Biome = 'Verdant frontier' | 'Rust wastes' | 'Crystal depths';
 export type Material = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 export interface WorldSettings {
     seed: string;
-    difficulty: 'explorer' | 'standard';
+    difficulty: 'explorer' | 'standard' | 'extreme';
     roughness: number;
     caves: number;
     abundance: number;
 }
 export const DEFAULT_WORLD: WorldSettings = { seed: 'LUMEN-01', difficulty: 'explorer', roughness: 1, caves: 1, abundance: 1 };
-export function validateSettings(s: WorldSettings) { if (!s || typeof s.seed !== 'string' || !s.seed.trim() || s.seed.length > 80 || !['explorer', 'standard'].includes(s.difficulty) || ![s.roughness, s.caves, s.abundance].every(v => Number.isFinite(v) && v >= .6 && v <= 1.4))
+export function validateSettings(s: WorldSettings) { if (!s || typeof s.seed !== 'string' || !s.seed.trim() || s.seed.length > 80 || !['explorer', 'standard', 'extreme'].includes(s.difficulty) || ![s.roughness, s.caves, s.abundance].every(v => Number.isFinite(v) && v >= .6 && v <= 1.4))
     throw new Error('Choose a seed and supported world settings.'); }
 export type ItemId = 'pickaxe' | 'blaster' | 'sword' | 'staff' | 'drill' | 'carbine' | 'dirt' | 'stone' | 'wood' | 'iron' | 'bar' | 'scrap' | 'crystal' | 'herb' | 'tonic' | 'torch' | 'brick';
 export interface Item {

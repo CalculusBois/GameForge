@@ -1,7 +1,13 @@
 import { initialBundle, SAVE_VERSION, GENERATOR_VERSION, ITEMS, SKINS, OBJECTIVES, validateSettings, WORLD_LIMIT, TILE, DEPTH, type Bundle, type WorldSave } from './model';
 export function validateBundle(value: unknown): asserts value is Bundle {
     const b = value as Bundle;
-    if (!b || b.version !== SAVE_VERSION || !b.worlds || !b.profile || !b.worlds[b.active])
+    if (!b || b.version !== SAVE_VERSION || !b.worlds || !b.profile)
+        throw new Error('This save version is unsupported. Your existing data has not been changed.');
+    const worldIds = Object.keys(b.worlds);
+    if (worldIds.length === 0) {
+        if (b.active !== '')
+            throw new Error('This save version is unsupported. Your existing data has not been changed.');
+    } else if (!b.worlds[b.active])
         throw new Error('This save version is unsupported. Your existing data has not been changed.');
     if (!Array.isArray(b.profile.owned) || !b.profile.owned.every(id => SKINS.some(s => s.id === id)) || !b.profile.owned.includes(b.profile.equipped))
         throw new Error('Invalid player profile.');
@@ -42,7 +48,11 @@ export class SaveStore {
     private constructor(db: IDBDatabase, data: Bundle) { this.db = db; this.data = data; }
     static async open(name='gameforge-frontier') { const db = await openDatabase(name); const stored = await new Promise<unknown>((resolve, reject) => { const r = db.transaction('saves').objectStore('saves').get('bundle'); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); }); const data = stored ?? initialBundle(); validateBundle(data); const store = new SaveStore(db, data); if (!stored)
         await store.transact(() => { }); return store; }
-    get world(): WorldSave { return this.data.worlds[this.data.active]; }
+    get world(): WorldSave {
+        const w = this.data.worlds[this.data.active];
+        if (!w) throw new Error('No world selected. Create a world first.');
+        return w;
+    }
     // Read/modify/write the whole world+profile bundle in one IndexedDB transaction.
     // The queued transaction reads the latest durable record, so purchases cannot race.
     transact<T>(change: (b: Bundle, w: WorldSave) => T): Promise<T> {
@@ -54,7 +64,12 @@ export class SaveStore {
                 next = structuredClone(read.result ?? this.data);
                 if (next.active !== expectedWorld)
                     throw new Error('The active world changed. Reopen this menu before trying again.');
-                result = change(next, next.worlds[next.active]);
+                const activeWorld = next.worlds[next.active];
+                if (!activeWorld && Object.keys(next.worlds).length > 0)
+                    throw new Error('The active world is missing from this save.');
+                // Empty saves (all worlds deleted) still allow bundle-level edits.
+                result = change(next, activeWorld as WorldSave);
+                validateBundle(next);
                 table.put(next, 'bundle');
             }
             catch (e) {
@@ -68,13 +83,17 @@ export class SaveStore {
         this.queue = run.catch(() => { });
         return run.catch(error => { this.onError?.(error instanceof Error ? error.message : String(error)); throw error; });
     }
-    schedulePosition(x: number, y: number, selected: number) { this.position = { x, y, selected, world: this.data.active }; if (this.timer)
+    schedulePosition(x: number, y: number, selected: number) {
+        if (!this.data.worlds[this.data.active]) return;
+        this.position = { x, y, selected, world: this.data.active }; if (this.timer)
         return; this.timer = setTimeout(() => { this.timer = undefined; const p = this.position; if (p)
-        void this.transact((_b, w) => { if (w.id === p.world) {
+        void this.transact((_b, w) => { if (w?.id === p.world) {
             w.player = { x: p.x, y: p.y };
             w.selected = p.selected;
         } }).catch(() => { }); }, 1200); }
-    async savePosition(x: number, y: number, selected: number) { if (this.timer) {
+    async savePosition(x: number, y: number, selected: number) {
+        if (!this.data.worlds[this.data.active]) return;
+        if (this.timer) {
         clearTimeout(this.timer);
         this.timer = undefined;
     } this.position = undefined; await this.transact((_b, w) => { w.player = { x, y }; w.selected = selected; }); }

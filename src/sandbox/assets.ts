@@ -67,10 +67,30 @@ export function sandboxAssets(scene: Phaser.Scene) {
         g.fillStyle(0x8a6a40); g.fillRect(18, 2, 4, 10);
         g.fillStyle(0xff6b4a); g.fillCircle(20, 2, 4);
     });
+    tex('wisp', 28, 28, g => {
+        g.fillStyle(0x7affee, 0.35); g.fillCircle(14, 14, 13);
+        g.fillStyle(0xb8fff4); g.fillCircle(14, 14, 8);
+        g.fillStyle(0xffffff); g.fillCircle(14, 14, 4);
+        g.fillStyle(0x62dfc3); g.fillCircle(10, 11, 2); g.fillCircle(18, 11, 2);
+    });
+    tex('skimmer', 42, 22, g => {
+        g.fillStyle(0x4a6578); g.fillEllipse(21, 12, 38, 14);
+        g.fillStyle(0x9dffdf); g.fillRect(8, 8, 26, 4);
+        g.fillStyle(0xff9b5a); g.fillCircle(34, 11, 4);
+        g.fillStyle(0x1a2a36); g.fillRect(4, 10, 6, 3);
+        g.fillStyle(0x82a0b0); g.fillTriangle(0, 11, 8, 4, 8, 18);
+    });
     tex('magic', 18, 18, g => { g.fillStyle(0x9b89ff); g.fillCircle(9, 9, 9); g.fillStyle(0xf5dcff); g.fillTriangle(9, 1, 14, 10, 3, 12); });
     tex('pick-tool', 32, 32, g => { g.lineStyle(4, 0xb9a180); g.lineBetween(3, 28, 24, 5); g.lineStyle(5, 0xb6d1de); g.lineBetween(10, 2, 29, 12); });
     tex('sword-tool', 38, 14, g => { g.fillStyle(0xc4ffff); g.fillTriangle(8, 2, 38, 7, 8, 12); g.fillStyle(0xb09773); g.fillRect(0, 5, 11, 4); g.fillRect(8, 0, 3, 14); });
     tex('staff-tool', 36, 16, g => { g.fillStyle(0x998cb9); g.fillRect(0, 6, 28, 4); g.fillStyle(0xcdb4ff); g.fillTriangle(25, 0, 36, 8, 25, 16); });
     tex('gun-tool', 32, 14, g => { g.fillStyle(0x829caa); g.fillRect(0, 3, 28, 8); g.fillStyle(0x77ffdf); g.fillRect(15, 4, 17, 3); g.fillStyle(0x283b51); g.fillRect(3, 8, 7, 6); });
+    tex('carbine-tool', 34, 14, g => { g.fillStyle(0x6f8f9c); g.fillRect(0, 2, 30, 9); g.fillStyle(0xa8ffe8); g.fillRect(18, 3, 16, 4); g.fillStyle(0x1e3344); g.fillRect(2, 9, 8, 5); g.fillRect(26, 0, 4, 4); });
+    tex('held-dirt', 18, 18, g => { g.fillStyle(0x685142); g.fillRect(1, 1, 16, 16); g.fillStyle(0x526b4c); g.fillRect(1, 1, 16, 4); });
+    tex('held-stone', 18, 18, g => { g.fillStyle(0x435463); g.fillRect(1, 1, 16, 16); g.fillStyle(0x8c9b9f); g.fillRect(1, 1, 16, 3); g.fillStyle(0x2a3844); g.fillRect(4, 8, 5, 3); });
+    tex('held-brick', 18, 18, g => { g.fillStyle(0x536f78); g.fillRect(1, 1, 16, 16); g.fillStyle(0x7a9aa3); g.fillRect(1, 1, 16, 3); g.fillStyle(0x314850); g.fillRect(2, 7, 6, 3); g.fillRect(10, 12, 6, 3); });
+    tex('held-torch', 14, 28, g => { g.fillStyle(0x94714c); g.fillRect(5, 10, 4, 16); g.fillStyle(0xffd18a); g.fillCircle(7, 7, 5); g.fillStyle(0xff9b5a); g.fillCircle(7, 6, 2); });
+    tex('held-tonic', 14, 22, g => { g.fillStyle(0xd6fff2); g.fillRect(3, 6, 8, 14); g.fillStyle(0x62dfc3); g.fillRect(4, 12, 6, 7); g.fillStyle(0xb09773); g.fillRect(5, 2, 4, 5); });
+    tex('held-resource', 16, 16, g => { g.fillStyle(0xc6aaa0); g.fillRect(2, 2, 12, 12); g.fillStyle(0xf0cb87); g.fillRect(5, 5, 6, 6); });
     tex('chest', 30, 24, g => { g.fillStyle(0xc39a60); g.fillRoundedRect(1, 1, 28, 22, 3); g.lineStyle(3, 0x4f5156); g.strokeRect(1, 1, 28, 22); g.fillStyle(0xe2eac0); g.fillRect(12, 8, 6, 8); });
 }

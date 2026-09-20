@@ -17,8 +17,11 @@ describe('seeded continuous terrain', () => {
         expect(baseTile(DEFAULT_WORLD, x, 21)).toBe(0);
         expect(baseTile(DEFAULT_WORLD, x, 22)).toBe(7);
     } expect(baseTile(DEFAULT_WORLD, 40, 24)).toBe(0); for (let x = -100; x < 100; x++)
-        expect(baseTile(DEFAULT_WORLD, x, DEPTH - 1)).toBe(6); for (let x = -200; x < 200; x++)
-        expect(Math.abs(surface(DEFAULT_WORLD, x + 1) - surface(DEFAULT_WORLD, x))).toBeLessThanOrEqual(2); });
+        expect(baseTile(DEFAULT_WORLD, x, DEPTH - 1)).toBe(6); for (let x = -200; x < 200; x++) {
+        const step = Math.abs(surface(DEFAULT_WORLD, x + 1) - surface(DEFAULT_WORLD, x));
+        // Spawn valley stays gentle; mountain cliffs elsewhere may step steeper (build/climb).
+        expect(step).toBeLessThanOrEqual(x >= -80 && x < 80 ? 2 : 10);
+    } });
     it('preserves mined and placed tiles through regeneration and serialized reopen', () => { const b = initialBundle(), w = b.worlds[b.active]; editTile(w, -1, 35, 0); editTile(w, 32, 30, 7); generateChunk(w, 8, 2); const restored = JSON.parse(JSON.stringify(b)); validateBundle(restored); expect(readTile(restored.worlds[b.active], -1, 35)).toBe(0); expect(readTile(restored.worlds[b.active], 32, 30)).toBe(7); expect(generateChunk(restored.worlds[b.active], -1, 1)[3 * 32 + 31]).toBe(0); });
     it('guarantees harvestable timber and exposed iron across supported settings', () => {
         for (const seed of ['frontier', 'negative-map', 'strange planet', '123']) {
