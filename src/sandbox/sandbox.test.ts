@@ -87,7 +87,7 @@ describe('seeded continuous terrain', () => {
         expect(baseTile(DEFAULT_WORLD, l.x, l.y - 1)).toBe(0); });
 });
 describe('inventory and durable progression rules', () => {
-    it('consumes recipe ingredients exactly once', () => { const w = newWorld('w', DEFAULT_WORLD); add(w.inventory, 'iron', 4); add(w.inventory, 'wood', 1); craft(w, 'bar', true); for(let i=0;i<10;i++) advanceWorld(w,1000); collectFurnace(w,true); expect(count(w.inventory, 'iron')).toBe(2); expect(count(w.inventory, 'bar')).toBe(1); expect(() => craft(w, 'staff', false)).toThrow(); });
+    it('consumes recipe ingredients exactly once', () => { const w = newWorld('w', DEFAULT_WORLD); add(w.inventory, 'station_furnace', 1); add(w.inventory, 'iron', 4); add(w.inventory, 'wood', 1); craft(w, 'bar', true); for(let i=0;i<10;i++) advanceWorld(w,1000); collectFurnace(w,true); expect(count(w.inventory, 'iron')).toBe(2); expect(count(w.inventory, 'bar')).toBe(1); expect(() => craft(w, 'staff', false)).toThrow(); });
     it('keeps all ingredients if crafting output does not fit', () => { const w = newWorld('w', DEFAULT_WORLD); w.inventory = Array.from({ length: 32 }, () => ({ id: 'stone' as ItemId, count: 99 })); w.inventory[0] = { id: 'bar', count: 99 }; const before = structuredClone(w.inventory); expect(() => craft(w, 'sword', true)).toThrow(); expect(w.inventory).toEqual(before); });
     it('does not partially add inventory stacks on overflow', () => { const w = newWorld('w', DEFAULT_WORLD); w.inventory = Array.from({ length: 32 }, () => ({ id: 'stone' as ItemId, count: 99 })); w.inventory[0]!.count = 98; expect(add(w.inventory, 'stone', 2)).toBe(false); expect(w.inventory[0]!.count).toBe(98); });
     it('charges a skin purchase once and preserves ownership', () => { const b = initialBundle(), w = b.worlds[b.active]; w.coins = 100; unlock(b, 'ranger'); unlock(b, 'ranger'); expect(w.coins).toBe(40); expect(b.profile.owned.filter(id => id === 'ranger')).toHaveLength(1); expect(() => unlock(b, 'knight')).toThrow(); expect(w.coins).toBe(40); });
@@ -101,6 +101,7 @@ describe('Milestone B: ores, tool tiers, and furnace smelting progression', () =
         expect(SMELTING_FUELS.coal.smeltsPerUnit).toBe(8);
         expect(TOOL_TIERS.pickaxe.tier).toBe(0);
         const w = newWorld('smelt-test', DEFAULT_WORLD);
+        add(w.inventory, 'station_furnace', 1);
         add(w.inventory, 'copper_ore', 10);
         add(w.inventory, 'coal', 5);
         // Smelt 2 copper bars: requires 4 copper ore and 1 coal (1 coal covers up to 8 smelts)
@@ -111,10 +112,17 @@ describe('Milestone B: ores, tool tiers, and furnace smelting progression', () =
         expect(count(w.inventory, 'copper_ore')).toBe(6);
         expect(count(w.inventory, 'coal')).toBe(4);
         expect(count(w.inventory, 'copper_bar')).toBe(2);
+        // Leftover coal burn must cover another 2 bars without taking more coal
+        const leftover = smelt(w, 'copper_ore', 'coal', 2, true);
+        expect(leftover).toContain('using 0 Coal');
+        for(let i=0;i<20;i++) advanceWorld(w,1000); collectFurnace(w,true);
+        expect(count(w.inventory, 'coal')).toBe(4);
+        expect(count(w.inventory, 'copper_bar')).toBe(4);
     });
 
     it('enforces coal vs wood fuel efficiency scaling', () => {
         const w = newWorld('fuel-test', DEFAULT_WORLD);
+        add(w.inventory, 'station_furnace', 1);
         add(w.inventory, 'copper_ore', 20);
         add(w.inventory, 'coal', 5);
         add(w.inventory, 'wood', 10);
@@ -134,17 +142,24 @@ describe('Milestone B: ores, tool tiers, and furnace smelting progression', () =
 
     it('guards smelting preconditions: outpost location, ore quantity, fuel quantity, and pack capacity', () => {
         const w = newWorld('guard-test', DEFAULT_WORLD);
+        add(w.inventory, 'station_furnace', 1);
         add(w.inventory, 'iron', 4);
         add(w.inventory, 'coal', 2);
 
         // Must be at outpost forge
         expect(() => smelt(w, 'iron', 'coal', 1, false)).toThrow(/outpost forge/);
 
+        const wNoFurnace = newWorld('no-furnace', DEFAULT_WORLD);
+        add(wNoFurnace.inventory, 'iron', 4);
+        add(wNoFurnace.inventory, 'coal', 2);
+        expect(() => smelt(wNoFurnace, 'iron', 'coal', 1, true)).toThrow(/furnace/);
+
         // Insufficient ore
         expect(() => smelt(w, 'iron', 'coal', 10, true)).toThrow(/Need/);
 
         // Insufficient fuel
         const wNoFuel = newWorld('no-fuel', DEFAULT_WORLD);
+        add(wNoFuel.inventory, 'station_furnace', 1);
         add(wNoFuel.inventory, 'iron', 4);
         expect(() => smelt(wNoFuel, 'iron', 'coal', 1, true)).toThrow(/fuel/);
 
@@ -153,6 +168,7 @@ describe('Milestone B: ores, tool tiers, and furnace smelting progression', () =
         wFull.inventory = Array.from({ length: 32 }, () => ({ id: 'stone' as ItemId, count: 99 }));
         wFull.inventory[0] = { id: 'iron', count: 10 };
         wFull.inventory[1] = { id: 'coal', count: 10 };
+        wFull.inventory[2] = { id: 'station_furnace', count: 1 };
         smelt(wFull, 'iron', 'coal', 1, true);
         for(let i=0;i<10;i++) advanceWorld(wFull,1000);
         expect(() => collectFurnace(wFull,true)).toThrow(/full/);

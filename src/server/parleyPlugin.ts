@@ -1,4 +1,4 @@
-import { handleCreation } from './creatorService';
+import { handleCreation, describeForgeHealth } from './creatorService';
 import type { Plugin, ViteDevServer } from 'vite';
 import { handleGameEdit, getParleyConfig, type GameEditRequest } from './parleyService';
 
@@ -36,14 +36,23 @@ export function parleyApiPlugin(): Plugin {
         if (url === '/api/parley/health' && req.method === 'GET') {
           try {
             const config = getParleyConfig();
+            const health = describeForgeHealth();
             res.setHeader('Content-Type', 'application/json');
             res.statusCode = 200;
             res.end(
               JSON.stringify({
                 ok: true,
-                hasKey: Boolean(config.apiKey),
+                hasKey: Boolean(config.apiKey) || health.providers.some(p => p !== 'pollinations' && p !== 'local'),
+                hasParley: health.hasParley,
                 baseUrl: config.baseUrl,
-                model: config.model,
+                model: health.model,
+                parleyModel: config.model,
+                primary: health.primary,
+                primaryLabel: health.primaryLabel,
+                providers: health.providers,
+                labels: health.labels,
+                order: health.order,
+                independent: true,
               })
             );
           } catch (err) {

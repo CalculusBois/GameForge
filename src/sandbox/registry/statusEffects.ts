@@ -101,7 +101,7 @@ export const STATUS_EFFECTS: Record<StatusEffectType, StatusEffectDefinition> = 
   starvation: {
     type: 'starvation',
     name: 'Starving',
-    description: 'Empty hunger disables passive food regeneration; no starvation damage.',
+    description: 'Empty hunger kills you. Respawn at the beacon with your pack intact.',
     isHarmful: true,
     defaultDurationMs: Infinity,
     color: '#c0392b',

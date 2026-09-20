@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { ANIMAL_REGISTRY, type WorldSave, TILE, CHUNK } from './model';
-import { biome, readTile, solid, surface, hash } from './terrain';
+import { biome, readTile, solid, surface, hash, inOutpost, OUTPOST_X } from './terrain';
 
 /** Wildlife has its own population, movement and threat response; never uses hostile AI. */
 export class Wildlife {
@@ -16,6 +16,12 @@ export class Wildlife {
     for (const obj of this.group.getChildren()) {
       const a = obj as Phaser.Physics.Arcade.Sprite, d = ANIMAL_REGISTRY[a.getData('species')];
       if (Math.hypot(a.x-player.x,a.y-player.y)>1500) { a.destroy(); continue; }
+      if (inOutpost(a.x, a.y, 16)) {
+        const dir = a.x >= OUTPOST_X ? 1 : -1;
+        if (Math.abs(a.x - OUTPOST_X) < 220) a.x = OUTPOST_X + dir * 360;
+        a.setVelocityX(dir * Math.max(d.speed, 70) * 1.4).setFlipX(dir < 0);
+        continue;
+      }
       if (a.getData('dying') || clock < a.getData('think')) continue;
       a.setData('think',clock+180);
       const body=a.body as Phaser.Physics.Arcade.Body;
@@ -33,23 +39,23 @@ export class Wildlife {
       a.setScale(1, moving ? 1 + Math.sin(clock/95)*.05 : 1);
       a.setData('retaliating', neutralAttack);
     }
-    if(clock-this.lastSpawn<(w.settings.difficulty==='extreme'?350:1800) || this.group.countActive()>=(w.settings.difficulty==='extreme'?40:8)) return;
+    if(clock-this.lastSpawn<(w.settings.difficulty==='extreme'?350:w.settings.difficulty==='standard'?900:1800) || this.group.countActive()>=(w.settings.difficulty==='extreme'?40:w.settings.difficulty==='standard'?14:8)) return;
     this.lastSpawn=clock;
     const cx=Math.floor(player.x/(CHUNK*TILE));
-    const range = w.settings.difficulty==='extreme' ? 4 : 1;
+    const range = w.settings.difficulty==='extreme' ? 4 : w.settings.difficulty==='standard' ? 2 : 1;
     let spawned = 0;
-    const maxWildlife = w.settings.difficulty==='extreme' ? 8 : 1;
+    const maxWildlife = w.settings.difficulty==='extreme' ? 8 : w.settings.difficulty==='standard' ? 3 : 1;
     for(let offset=-range;offset<=range;offset++) {
       if (spawned >= maxWildlife) break;
-      for (let slot = 0; slot < (w.settings.difficulty==='extreme' ? 3 : 1); slot++) {
-        if (spawned >= maxWildlife || this.group.countActive() >= (w.settings.difficulty==='extreme'?40:8)) break;
+      for (let slot = 0; slot < (w.settings.difficulty==='extreme' ? 3 : w.settings.difficulty==='standard' ? 2 : 1); slot++) {
+        if (spawned >= maxWildlife || this.group.countActive() >= (w.settings.difficulty==='extreme'?40:w.settings.difficulty==='standard'?14:8)) break;
         const id=`animal:${cx+offset}:${slot}`;
         if(w.defeated.includes(id)||this.group.getChildren().some(a=>(a as Phaser.Physics.Arcade.Sprite).getData('id')===id)) continue;
         const tx=(cx+offset)*CHUNK+4+Math.floor(hash(w.settings.seed,cx+offset,slot,'animal-x')*20);
         let ty=surface(w.settings,tx)-1;
         if(player.y/TILE>ty+15) { ty=Math.floor(player.y/TILE); for(let n=0;n<12&&!solid(w,tx,ty+1);n++) ty++; }
         const roster=Object.values(ANIMAL_REGISTRY).filter(d=>d.preferredBiomes.includes(biome(w.settings,tx,ty)));
-        if(!roster.length||solid(w,tx,ty)||readTile(w,tx,ty)===23||!solid(w,tx,ty+1)||Math.abs(tx*TILE-player.x)<(w.settings.difficulty==='extreme'?80:160))continue;
+        if(!roster.length||solid(w,tx,ty)||readTile(w,tx,ty)===23||!solid(w,tx,ty+1)||inOutpost((tx+.5)*TILE,(ty+1)*TILE,80)||Math.abs(tx*TILE-player.x)<(w.settings.difficulty==='extreme'?80:160))continue;
         const d=roster[Math.floor(hash(w.settings.seed,tx,ty,`animal-${slot}`)*roster.length)];
         const a=this.group.create((tx+.5)*TILE,(ty+1)*TILE-d.hitbox.height/2-1,d.texture) as Phaser.Physics.Arcade.Sprite;
         a.setSize(d.collider.width,d.collider.height).setDepth(8);

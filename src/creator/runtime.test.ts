@@ -15,6 +15,9 @@ describe('bounded session creator',()=>{
   s=fresh();s.requirements[0].supported=false;s.requirements[0].limitation='Inventory weapons unavailable';expect(()=>validateSpec(s)).toThrow('Inventory weapons');
   s=fresh();s.requirements[0].evidence=['attacks.9'];expect(()=>validateSpec(s)).toThrow('Empty evidence');
  });
+ it('spawns at a supplied world position and accepts world lifetime',()=>{
+  const {r}=setup(),s=fresh();r.apply(s,{x:420,y:180});expect(r.actors.get(s.id)?.x).toBe(420);expect(validateSpec(s).lifetime).toBe('world');
+ });
  it('constructs a six-sword boss by composition without prompt matching',()=>{
   const {r}=setup(),s=fresh();s.visuals[0].shape.kind='sword';s.visuals[1].shape.kind='sword';s.visuals[1].count=6;s.attacks[0].projectile.shape.kind='sword';r.apply(s);const a=r.actors.get(s.id)!;const first=componentPose(a,1,0,r.time);tick(r,3000);const second=componentPose(a,1,0,r.time);expect(first).not.toEqual(second);expect(Math.hypot(second.x-a.x,second.y-a.y)).toBeCloseTo(70);expect(a.pending.length).toBe(1);expect(r.shots).toHaveLength(0);tick(r,900);expect(r.shots.length).toBeGreaterThan(0);expect(r.shots[0].p.shape.kind).toBe('sword');
  });
@@ -33,6 +36,20 @@ describe('bounded session creator',()=>{
   const {r,host}=setup(),s=fresh();s.entityType='mechanic';s.visuals=[];s.attacks=[];s.graph.rules=[];s.requirements=[{text:'Rot buildup',supported:true,evidence:['statuses'],limitation:''}];s.statuses=[status];r.apply(s);
   r.buildup('enemy-projectile');expect(r.meters[0].value).toBe(0);r.buildup('enemy-contact');tick(r,2000);expect(r.meters[0].value).toBe(30);tick(r,1000);expect(r.meters[0].value).toBeCloseTo(20);
   for(let i=0;i<3;i++)r.buildup('enemy-contact');expect(r.meters[0].value).toBe(0);const until=r.meters[0].until;r.buildup('enemy-contact');expect(r.meters[0].until).toBe(until);tick(r,1000);expect(host.damage).toHaveBeenCalledWith(3,0,'status');r.death();expect(r.meters[0].until).toBe(0);r.remove(s.id);expect(r.meters).toHaveLength(0);
+ });
+ it('deflects shots away from the player and into the owner',()=>{
+  const {r,host}=setup(),s=fresh();
+  host.deflect=vi.fn((p)=>Math.hypot(p.x,p.y)<40);
+  r.apply(s);
+  const actor=r.actors.get(s.id)!;
+  actor.x=180;actor.y=0;actor.mode='stationary';actor.speed=0;actor.born=-1e6;
+  r.shots.push({x:180,y:0,origin:{x:180,y:0},owner:s.id,attack:'shard-volley',p:{...s.attacks[0].projectile,speed:400,turnRate:0,lifetime:4000,orbitRadius:0},angle:Math.PI,born:r.time,phase:0});
+  tick(r,600);
+  expect(host.deflect).toHaveBeenCalled();
+  expect(host.damage).not.toHaveBeenCalled();
+  expect(r.shots.some(shot=>shot.reflected)).toBe(true);
+  tick(r,600);
+  expect(actor.hp).toBeLessThan(s.stats.health);
  });
  it('replaces without duplicates, bounds all resources and cleans repeated cycles',()=>{
   const {r}=setup();for(let i=0;i<30;i++){const s=fresh();r.apply(s);s.visuals[1].orbitSpeed=3;r.apply(s);expect(r.actors.size).toBe(1);tick(r,5000);expect(r.shots.length).toBeLessThanOrEqual(96);r.reset();expect(r.actors.size+r.meters.length+r.shots.length).toBe(0);}

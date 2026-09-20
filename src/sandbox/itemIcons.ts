@@ -6,6 +6,8 @@
 import type Phaser from 'phaser';
 import { ITEMS, type ItemId } from './registry/items';
 import { MATERIALS, BUILDING } from './model';
+import { WEAPON_SKINS } from './registry/cosmetics';
+import { GUN_FAMILIES } from './customization';
 
 export const ITEM_ICON_SIZE = 32;
 
@@ -156,6 +158,51 @@ function gun(ctx: Ctx, body: number, glow: number, long = false) {
     if (long) fill(ctx, 0x2a3f4e, 22, 8, 4, 4);
 }
 
+function hexNum(value: string, fallback: number) {
+    const n = Number.parseInt(value.replace('#', ''), 16);
+    return Number.isFinite(n) ? n : fallback;
+}
+
+export function gunTextureKey(itemId: string, skinId?: string) {
+    if (!skinId || skinId === 'skin_brushed_steel') return `icon-${itemId}`;
+    return `icon-${itemId}--${skinId}`;
+}
+
+export function heldGunTextureKey(itemId: string, skinId?: string) {
+    const skin = skinId && skinId !== 'skin_brushed_steel' ? `--${skinId}` : '';
+    return `held-gun-${itemId}${skin}`;
+}
+
+export function createHeldGunCanvas(id: string, skinId?: string): HTMLCanvasElement {
+    const { body, glow, long } = gunPalette(id, skinId);
+    const canvas = document.createElement('canvas');
+    canvas.width = long ? 40 : 34;
+    canvas.height = 16;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return canvas;
+    fill(ctx, body, 2, 4, long ? 32 : 26, 6);
+    fill(ctx, glow, long ? 20 : 18, 5, long ? 16 : 14, 3);
+    fill(ctx, 0x1e3344, 4, 9, 7, 6);
+    fill(ctx, 0x1a2834, 0, 5, 4, 5);
+    if (long) fill(ctx, 0x2a3f4e, 28, 0, 4, 4);
+    return canvas;
+}
+
+function gunPalette(id: string, skinId?: string) {
+    const long = id !== 'blaster';
+    const skin = skinId ? WEAPON_SKINS[skinId] : undefined;
+    if (skin) {
+        return {
+            body: hexNum(skin.palette.primary, 0x4a6270),
+            glow: hexNum(skin.palette.glow ?? skin.palette.secondary, 0x77ffdf),
+            long,
+        };
+    }
+    if (id === 'rifle_rail') return { body: 0x1a3a4a, glow: 0x00e5ff, long: true };
+    if (id === 'blaster') return { body: 0x4a6270, glow: 0x77ffdf, long: false };
+    return { body: 0x3e5563, glow: 0xa8ffe8, long: true };
+}
+
 function staff(ctx: Ctx, shaft: number, gem: number, tip: number) {
     fill(ctx, shaft, 8, 10, 4, 18);
     fill(ctx, 0xb09773, 7, 26, 6, 4);
@@ -181,11 +228,11 @@ function hammer(ctx: Ctx, head = 0x90a4ae) {
     fill(ctx, 0x546e7a, 6, 16, 20, 2);
 }
 
-function drawItem(ctx: Ctx, id: string) {
+function drawItem(ctx: Ctx, id: string, skinId?: string) {
     ctx.clearRect(0, 0, ITEM_ICON_SIZE, ITEM_ICON_SIZE);
     // Block / placeable items → cube using the same face color as the placed world tile
     const blockBase = placedColor(id);
-    if (blockBase != null && ['dirt','stone','brick','wood','platform_wood','wall_wood','wall_stone','door_wood','block_metal','block_crystal','iron','copper_ore','coal','silver_ore','gold_ore','cobalt_ore','obsidian','scrap'].includes(id)) {
+    if (blockBase != null && ['dirt','stone','brick','wood','platform_wood','wall_wood','wall_stone','block_metal','block_crystal','iron','copper_ore','coal','silver_ore','gold_ore','cobalt_ore','obsidian','scrap'].includes(id)) {
         const fleck = id.includes('ore') || id === 'iron' || id === 'coal' || id === 'obsidian' || id === 'scrap'
             ? shade(blockBase, 1.5) : undefined;
         const top = id === 'dirt' ? 0x526b4c : id === 'wood' || id === 'platform_wood' || id === 'wall_wood' || id === 'door_wood'
@@ -221,11 +268,15 @@ function drawItem(ctx: Ctx, id: string) {
             tri(ctx, 0x64b5f6, 16, 2, 22, 12, 10, 12);
             fill(ctx, 0x90caf9, 14, 6, 4, 4);
             break;
-        case 'blaster': gun(ctx, 0x4a6270, 0x77ffdf); break;
+        case 'blaster':
         case 'carbine':
         case 'blaster_burst':
-        case 'blaster_scatter': gun(ctx, 0x3e5563, 0xa8ffe8, true); break;
-        case 'rifle_rail': gun(ctx, 0x1a3a4a, 0x00e5ff, true); break;
+        case 'blaster_scatter':
+        case 'rifle_rail': {
+            const palette = gunPalette(id, skinId);
+            gun(ctx, palette.body, palette.glow, palette.long);
+            break;
+        }
         case 'staff': staff(ctx, 0x6d5a8d, 0xcdb4ff, 0xf3e5ff); break;
         case 'staff_ember': staff(ctx, 0x5d4037, 0xff5722, 0xffcc80); break;
         case 'wand_frost': staff(ctx, 0x455a64, 0x40c4ff, 0xe1f5fe); break;
@@ -243,6 +294,27 @@ function drawItem(ctx: Ctx, id: string) {
             circ(ctx, 0xff9b5a, 16, 10, 6);
             circ(ctx, 0xffd18a, 16, 9, 3);
             circ(ctx, 0xfff3c4, 16, 8, 1.5);
+            break;
+        case 'door_wood':
+            fill(ctx, 0x3e2723, 8, 2, 16, 28);
+            fill(ctx, 0x8d6e4a, 9, 3, 14, 26);
+            fill(ctx, 0x5d4037, 9, 10, 14, 2);
+            fill(ctx, 0x5d4037, 9, 18, 14, 2);
+            circ(ctx, 0xffd54f, 20, 16, 2);
+            break;
+        case 'ammo':
+            fill(ctx, 0x90a4ae, 8, 10, 16, 12);
+            fill(ctx, 0xffc107, 10, 6, 4, 18);
+            fill(ctx, 0xffc107, 16, 6, 4, 18);
+            fill(ctx, 0xffc107, 22, 6, 4, 18);
+            fill(ctx, 0xffecb3, 10, 6, 4, 4);
+            break;
+        case 'lightsaber':
+            fill(ctx, 0x37474f, 13, 20, 6, 10);
+            fill(ctx, 0x90a4ae, 14, 18, 4, 4);
+            fill(ctx, 0x69f0ae, 14, 2, 4, 16);
+            fill(ctx, 0xb9f6ca, 15, 2, 2, 16);
+            circ(ctx, 0x69f0ae, 16, 2, 2);
             break;
         case 'tonic':
         case 'potion_mana':
@@ -417,25 +489,26 @@ function drawItem(ctx: Ctx, id: string) {
     }
 }
 
-export function paintItemIcon(ctx: Ctx, id: string) {
-    drawItem(ctx, id);
+export function paintItemIcon(ctx: Ctx, id: string, skinId?: string) {
+    drawItem(ctx, id, skinId);
 }
 
-export function createItemIconCanvas(id: string): HTMLCanvasElement {
+export function createItemIconCanvas(id: string, skinId?: string): HTMLCanvasElement {
     const canvas = document.createElement('canvas');
     canvas.width = ITEM_ICON_SIZE;
     canvas.height = ITEM_ICON_SIZE;
     const ctx = canvas.getContext('2d');
-    if (ctx) drawItem(ctx, id);
+    if (ctx) drawItem(ctx, id, skinId);
     return canvas;
 }
 
 /** Cached PNG data URL for React HUD / inventory. */
-export function itemIconUrl(id: string): string {
-    const hit = cache.get(id);
+export function itemIconUrl(id: string, skinId?: string): string {
+    const key = skinId ? `${id}--${skinId}` : id;
+    const hit = cache.get(key);
     if (hit) return hit;
-    const url = createItemIconCanvas(id).toDataURL('image/png');
-    cache.set(id, url);
+    const url = createItemIconCanvas(id, skinId).toDataURL('image/png');
+    cache.set(key, url);
     return url;
 }
 
@@ -446,5 +519,17 @@ export function registerItemIconTextures(scene: Phaser.Scene) {
         const key = `icon-${id}`;
         if (scene.textures.exists(key)) scene.textures.remove(key);
         scene.textures.addCanvas(key, createItemIconCanvas(id));
+    }
+    for (const gunId of GUN_FAMILIES) {
+        for (const skin of Object.values(WEAPON_SKINS)) {
+            const iconKey = gunTextureKey(gunId, skin.id);
+            if (iconKey !== `icon-${gunId}`) {
+                if (scene.textures.exists(iconKey)) scene.textures.remove(iconKey);
+                scene.textures.addCanvas(iconKey, createItemIconCanvas(gunId, skin.id));
+            }
+            const heldKey = heldGunTextureKey(gunId, skin.id);
+            if (scene.textures.exists(heldKey)) scene.textures.remove(heldKey);
+            scene.textures.addCanvas(heldKey, createHeldGunCanvas(gunId, skin.id));
+        }
     }
 }

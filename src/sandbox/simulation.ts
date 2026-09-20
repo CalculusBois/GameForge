@@ -1,5 +1,5 @@
 import { saleValue } from './registry/economy';
-import { add, remove, count, ITEMS, type WorldSave, type Inventory, type ItemId } from './model';
+import { add, remove, count, ITEMS, markOnboarding, noteDiscovery, type WorldSave, type Inventory, type ItemId } from './model';
 import { readTile, editTile } from './terrain';
 
 /** Called only from the active Phaser simulation. Never uses wall-clock/offline time. */
@@ -39,7 +39,9 @@ export function collectFurnace(w: WorldSave, atBase: boolean) {
   if (!f?.stored) throw new Error('No finished bars yet.');
   if (!add(w.inventory, f.output, f.stored)) throw new Error('Pack full. Bars remain safe in the output slot.');
   const n = f.stored; f.stored = 0;
-  return `Collected ${n} ${ITEMS[f.output].name}`;
+  markOnboarding(w, 'smelted');
+  const discovered = noteDiscovery(w, 'item', f.output);
+  return `Collected ${n} ${ITEMS[f.output].name}${discovered ? ` · ${discovered}` : ''}`;
 }
 export function storageTransfer(w: WorldSave, key: string, slot: number, deposit: boolean) {
   const [x, y] = key.split(',').map(Number);

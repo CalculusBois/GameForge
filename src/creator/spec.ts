@@ -5,8 +5,9 @@ export interface Projectile { shape: Shape; speed: number; turnRate: number; lif
 export type Action = { type: 'fire'; attack: string } | { type: 'state'; state: string } | { type: 'move'; mode: 'hover' | 'pursuit' | 'charge' | 'stationary'; speed: number } | { type: 'orbit'; speed: number };
 export interface Rule { event: 'timer' | 'healthBelow' | 'enter'; state: string; interval: number; threshold: number; once: boolean; actions: Action[] }
 export interface StatusSpec { id: string; label: string; color: string; icon: string; sources: string[]; amount: number; maximum: number; decayDelay: number; decayRate: number; duration: number; damage: number; damageInterval: number; resetOnActivation: boolean; refresh: 'refresh' | 'ignore'; stacking: 'none'; death: 'clear'; respawn: 'clear' }
+export interface WorldCreation { spec: CreationSpec; x: number; y: number; defeated: boolean }
 export interface CreationSpec {
- version: 1; id: string; name: string; entityType: 'boss' | 'enemy' | 'mechanic'; lifetime: 'session'; summary: string;
+ version: 1; id: string; name: string; entityType: 'boss' | 'enemy' | 'mechanic'; lifetime: 'world'; summary: string;
  requirements: { text: string; supported: boolean; evidence: string[]; limitation: string }[];
  visuals: Component[];
  movement: { mode: 'hover' | 'pursuit' | 'charge' | 'stationary'; speed: number; distance: number };
@@ -43,7 +44,7 @@ export function validateSpec(value: unknown): CreationSpec {
  if(JSON.stringify(value)?.length>90000) throw Error('Creation exceeds 90 KB');
  const o=object(value,['version','id','name','entityType','lifetime','summary','requirements','visuals','movement','stats','attacks','graph','statuses','spawn','removal'],'creation');
  choice(o.version,[1],'version');id(o.id,'id');str(o.name,'name',80);str(o.summary,'summary',1000);
- choice(o.entityType,['boss','enemy','mechanic'],'entityType');choice(o.lifetime,['session'],'lifetime');choice(o.removal,['defeat-or-manual'],'removal');
+ choice(o.entityType,['boss','enemy','mechanic'],'entityType');choice(o.lifetime,['session','world'],'lifetime');choice(o.removal,['defeat-or-manual'],'removal');
  const requirements=list(o.requirements,32,'requirements');if(!requirements.length)throw Error('Explicit requirement coverage is required');
  requirements.forEach(v=>{const r=object(v,['text','supported','evidence','limitation'],'requirement');str(r.text,'requirement',500);bool(r.supported,'supported');list(r.evidence,16,'evidence').forEach(x=>str(x,'evidence'));if(typeof r.limitation!=='string')throw Error('limitation must be text');if(!r.supported)throw Error(`Unmet requirement: ${r.text}. ${r.limitation}`);if(!(r.evidence as unknown[]).length)throw Error('Requirement needs executable evidence');});
  const visuals=list(o.visuals,16,'visuals');let total=0;
@@ -67,5 +68,7 @@ export function validateSpec(value: unknown): CreationSpec {
  const spawn=object(o.spawn,['distance','grace'],'spawn');num(spawn.distance,260,600,'spawn.distance');num(spawn.grace,1500,10000,'spawn.grace');
  // Every claimed requirement must resolve to an actual nonempty executable field.
  requirements.forEach(v=>{for(const path of (v as CreationSpec['requirements'][number]).evidence){if(!/^(visuals|movement|stats|attacks|graph|statuses|spawn|lifetime|removal)(\.[a-zA-Z0-9]+)*$/.test(path))throw Error(`Invalid evidence path: ${path}`);let current:unknown=o;for(const part of path.split('.')){if(!current||typeof current!=='object')throw Error(`Missing evidence: ${path}`);current=(current as Record<string,unknown>)[part];}if(current===undefined||current===null||(Array.isArray(current)&&!current.length))throw Error(`Empty evidence: ${path}`);}});
- return structuredClone(value) as CreationSpec;
+ const spec=structuredClone(value) as CreationSpec;
+ spec.lifetime='world';
+ return spec;
 }

@@ -7,11 +7,18 @@ export function bossSites(s: WorldSettings): BossSite[] {
  const known=bySettings.get(s);if(known)return known;
  const key=JSON.stringify(s); const cached=cache.get(key); if(cached){bySettings.set(s,cached);return cached;}
  const sites:BossSite[]=[];
- for(const [id,target,depth] of [['rust_colossus','Rust wastes',0],['mycelial_sovereign','Fungal hollows',40],['aether_warden','Crystal depths',48]] as const) {
-  for(let n=0;n<120;n++) {
-   const x=(id==='aether_warden'?-1:1)*(220+n*32);
-   const floor=surface(s,x)+depth;
-   if(biome(s,x,floor)===target && sites.every(p=>Math.abs(p.x-x)>40)) {sites.push({id,x,floor});break;}
+ if(s.difficulty==='boss') {
+  for(const [id,x,depth] of [['rust_colossus',102,0],['mycelial_sovereign',128,10],['aether_warden',-108,14]] as const) {
+   sites.push({id,x,floor:surface(s,x)+depth});
+  }
+ } else {
+  const start=220, step=32;
+  for(const [id,target,depth] of [['rust_colossus','Rust wastes',0],['mycelial_sovereign','Fungal hollows',40],['aether_warden','Crystal depths',48]] as const) {
+   for(let n=0;n<120;n++) {
+    const x=(id==='aether_warden'?-1:1)*(start+n*step);
+    const floor=surface(s,x)+depth;
+    if(biome(s,x,floor)===target && sites.every(p=>Math.abs(p.x-x)>40)) {sites.push({id,x,floor});break;}
+   }
   }
  }
  bySettings.set(s,sites);cache.set(key,sites);if(cache.size>8)cache.delete(cache.keys().next().value!);return sites;

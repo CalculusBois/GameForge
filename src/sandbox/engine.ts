@@ -5,6 +5,7 @@ import { gameAudio } from './audio';
 import { bossSites } from './bossSites';
 import { BOSS_REGISTRY } from './registry/bosses';
 import { MODULAR_WARDROBE } from './registry/cosmetics';
+import { GUN_FAMILIES } from './customization';
 import { Wildlife } from './wildlife';
 import { ANIMAL_REGISTRY, BIOME_VARIANTS } from './model';
 import { advanceWorld, harvestCrop } from './simulation';
@@ -12,6 +13,7 @@ import { FOOD_PROFILES, eatFood } from './model';
 import Phaser from 'phaser';
 import { MOVEMENT } from '../platformer/config';
 import { sandboxAssets } from './assets';
+import { heldGunTextureKey } from './itemIcons';
 import { ChunkManager } from './chunks';
 import { SaveStore } from './persistence';
 import { ENEMIES, FLYING, ELITE_MODIFIERS, type Kind } from './enemies';
@@ -26,19 +28,23 @@ import {
   WEAPONS,
   add,
   remove,
+  count,
   chest,
   derivePlayerStats,
   useVitalityCore,
   useManaCore,
   tickStatusEffects,
   createStatusEffect,
+  markOnboarding,
+  noteDiscovery,
   type ActiveStatusEffect,
   type StatusEffectType,
   TOTEM_REGISTRY,
   type Biome,
   type ItemId,
 } from './model';
-import { readTile, editTile, clearLine, solid, biome, surface, hash, harvestables, landmarks, protectedTile, clearUnsupportedHarvest, sweepUnsupportedHarvest, HARVEST_MS, type Harvest } from './terrain';
+import { forgeBossReward } from './registry/economy';
+import { readTile, editTile, clearLine, solid, biome, surface, hash, harvestables, landmarks, protectedTile, inOutpost, OUTPOST_X, clearUnsupportedHarvest, sweepUnsupportedHarvest, HARVEST_MS, calculateSafeSurfaceSpawnY, type Harvest } from './terrain';
 import { sessionStart_ as analyticsStart, track as analyticsTrack } from '../analytics';
 import { getToolProfile } from './registry/toolsAndWeapons';
 export type Menu = 'inventory' | 'crafting' | 'cooking' | 'skins' | 'objectives' | 'shop' | 'map' | 'worlds' | 'settings' | 'stats' | 'forge' | 'storage' | null;
@@ -49,6 +55,7 @@ export interface SandboxHud {
     mana: number;
     maxMana: number;
     hunger: number;
+    ammo?: number;
     storageKey?: string;
     boss?: { name: string; hp: number; maxHp: number; phase: number };
     defense: number;
@@ -60,6 +67,7 @@ export interface SandboxHud {
     nearCrafting?: boolean;
     nearFurnace?: boolean;
     nearCooking?: boolean;
+    stationFocus?: 'workbench' | 'forge' | 'furnace' | 'cooking' | 'terminal';
     fps: number;
     chunks: number;
     enemies: number;
@@ -68,6 +76,7 @@ export interface SandboxHud {
     y: number;
     recall: number;
     activeEffects: { type: string; name: string; icon: string; remainingMs: number }[];
+    bossHunt?: { id: string; name: string; tiles: number; dir: string; defeated: boolean }[];
 }
 export interface PlayerSessionSnapshot { health:number;mana:number;effects:ActiveStatusEffect[];shieldBudget:number; }
 export interface SandboxController {
@@ -85,7 +94,7 @@ export interface SandboxController {
     setMana: (n: number) => void;
     setHunger: (n: number) => void;
     feedback: () => void;
-    applyCreation: (spec: CreationSpec) => CreationSpec;
+    applyCreation: (spec: CreationSpec, at?: { x: number; y: number }) => CreationSpec;
     removeCreation: (id: string) => void;
     resetCreations: () => void;
     castBlink?: () => void;
@@ -101,6 +110,33 @@ export interface VerificationPort {
     castBlink?:()=>void;castShield?:()=>void;
 }
 function parseHexColor(hex?:string,fallback=0xe5484d){const n=parseInt(hex?.replace('#','')??'',16);return Number.isNaN(n)?fallback:n;}
+function isBossLike(f: Phaser.Physics.Arcade.Sprite) {
+    const kind = f.getData('kind') as string | undefined;
+    return !!(f.getData('boss') || f.getData('showcase') || f.getData('creator') || (kind && BOSS_REGISTRY[kind]));
+}
+function applyBossHurtbox(f: Phaser.Physics.Arcade.Sprite) {
+    const kind = f.getData('kind') as string | undefined;
+    const def = kind ? BOSS_REGISTRY[kind] : undefined;
+    const fw = Math.max(1, f.frame?.width || f.width || 64);
+    const fh = Math.max(1, f.frame?.height || f.height || 80);
+    // Keep the tile collider compact so bosses do not embed in blocks. Weapon hits use the visible sprite in shotsVsBosses.
+    const bw = Math.round((def?.collider.width ?? 52) * 1.15);
+    const bh = Math.round((def?.collider.height ?? 64) * 1.15);
+    f.setSize(bw, bh);
+    f.setOffset((fw - bw) / 2, (fh - bh) / 2);
+}
+function dressProjectile(shot: Phaser.Physics.Arcade.Sprite) {
+    const body = shot.body as Phaser.Physics.Arcade.Body | undefined;
+    if (!body) return shot;
+    body.setCircle(14, -6, -6);
+    return shot;
+}
+function shadeRgb(c: number, f: number) {
+    const r = Math.min(255, Math.max(0, Math.round(((c >> 16) & 255) * f)));
+    const g = Math.min(255, Math.max(0, Math.round(((c >> 8) & 255) * f)));
+    const b = Math.min(255, Math.max(0, Math.round((c & 255) * f)));
+    return (r << 16) | (g << 8) | b;
+}
 export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: SandboxHud) => void, onMenu: (m: Menu) => void, verification?: (port:VerificationPort)=>void, restore?:PlayerSessionSnapshot): SandboxController {
     const sound = new GameSound();
     let scene: WorldScene | undefined, disposed = false;
@@ -114,6 +150,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         shots!: Phaser.Physics.Arcade.Group;
         hostile!: Phaser.Physics.Arcade.Group;
         target!: Phaser.GameObjects.Graphics;
+        bossArt!: Phaser.GameObjects.Graphics;
         light!: Phaser.GameObjects.Graphics;
         sky!: Phaser.GameObjects.Graphics;
         stars!: Phaser.GameObjects.Graphics;
@@ -129,6 +166,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         jumped = false;
         lastAttack = -1000;
         lastMagic = -10000;
+        saberReflectUntil = 0;
         creator?: CreatorRenderer;
         hurtUntil = 0;
         knockUntil = 0;
@@ -161,7 +199,6 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         nearWardingTotem = false;
         nearProspectorTotem = false;
         nearArcaneTotem = false;
-        lastBlink = -1000;
         lastShield = -1000;
         shieldBudget = 0;
         simulationMs = 0;
@@ -183,7 +220,10 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             if(restore){this.health=restore.health;this.mana=restore.mana;this.activeEffects=structuredClone(restore.effects);this.shieldBudget=restore.shieldBudget;}
             for (const [id,boss] of Object.entries(BOSS_REGISTRY)) ENEMIES[id] = {
                 name: boss.name, texture: id, hp: boss.maxHp, damage: boss.damage, speed: boss.speed, range: 600,
-                reward: boss.coinReward, collider: boss.collider, baseType: 'sentinel'
+                reward: boss.coinReward, collider: boss.collider,
+                baseType: boss.baseClass === 'BaseFlyingBoss' ? 'drone' : 'sentinel',
+                baseClass: boss.baseClass, flying: boss.baseClass === 'BaseFlyingBoss',
+                attackPattern: { type: 'ProjectileBurst', burstCount: 4, projectileColor: boss.phases[0]?.attacks[0]?.telegraphColor || '#ffb74d' },
             };
             this.sky = this.add.graphics().setScrollFactor(0).setDepth(-10);
             this.stars = this.add.graphics().setScrollFactor(0).setDepth(-9);
@@ -196,6 +236,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             this.player.setSize(22, 42).setOffset(9, 4).setMaxVelocity(MOVEMENT.speed, MOVEMENT.maxFall);
             this.safe = { x: p.x, y: p.y };
             this.outfit = this.add.graphics().setDepth(10.5);
+            this.bossArt = this.add.graphics().setDepth(15);
             this.weapon = this.add.image(p.x + 20, p.y, 'gun-tool').setOrigin(.15, .5).setDepth(11);
             this.foes = this.physics.add.group();
             this.wildlife = new Wildlife(this, () => store.world);
@@ -216,39 +257,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             // Enemy projectiles pass through other mobs — no friendly fire
             this.physics.add.overlap(this.hostile, this.foes, () => { /* allies ignore hostile bolts */ });
             this.physics.add.overlap(this.shots, this.foes, (s, f) => {
-                const shot = s as Phaser.Physics.Arcade.Sprite, foe = f as Phaser.Physics.Arcade.Sprite;
-                if (!shot.active || !foe.active || foe.getData('dying'))
-                    return;
-                const hitFoes = shot.getData('hitFoes') as Set<string> | undefined;
-                const foeId = foe.getData('id') as string;
-                if (hitFoes && hitFoes.has(foeId)) return;
-                if (hitFoes) hitFoes.add(foeId);
-
-                const dmg = shot.getData('damage');
-                const eff = shot.getData('statusEffect');
-                if (!shot.getData('isExplosive')) this.hit(foe, dmg, eff);
-                if (shot.getData('chain')) {
-                    const visited = new Set([foe]); let from=foe;
-                    for(let n=0;n<2;n++) {
-                        const target=(this.foes.getChildren() as Phaser.Physics.Arcade.Sprite[]).filter(f=>!visited.has(f)&&!f.getData('dying')&&Math.hypot(f.x-from.x,f.y-from.y)<130&&clearLine(store.world,from.x,from.y,f.x,f.y)).sort((a,b)=>Phaser.Math.Distance.Between(a.x,a.y,from.x,from.y)-Phaser.Math.Distance.Between(b.x,b.y,from.x,from.y))[0];
-                        if(!target)break;this.hit(target,dmg*.7);visited.add(target);this.burst(target.x,target.y,0x18ffff);from=target;
-                    }
-                    shot.destroy();return;
-                }
-
-                if (shot.getData('isExplosive')) {
-                    this.explodeShot(shot.x, shot.y, dmg);
-                    shot.destroy();
-                    return;
-                }
-
-                const pierce = shot.getData('pierce');
-                if (typeof pierce === 'number' && pierce > 1) {
-                    shot.setData('pierce', pierce - 1);
-                    this.burst(shot.x, shot.y, 0x82eeef);
-                } else {
-                    shot.destroy();
-                }
+                this.connectShot(s as Phaser.Physics.Arcade.Sprite, f as Phaser.Physics.Arcade.Sprite);
             });
             this.physics.add.overlap(this.shots, this.wildlife.group, (shot, animal) => {
                 const projectile = shot as Phaser.Physics.Arcade.Sprite;
@@ -260,16 +269,37 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             });
             this.physics.add.overlap(this.player, this.foes, (_p, f) => { const foe = f as Phaser.Physics.Arcade.Sprite; if (!foe.getData('dying'))
                 { if(foe.getData('creator')) { this.creator?.runtime.contact(foe.getData('creator'));return; } const kind = foe.getData('kind') as Kind; if (kind === 'explosion_bot') return; const elite = (foe.getData('eliteDamage') as number) || 1; this.damage(Math.ceil((ENEMIES[kind]?.damage ?? 10) * elite), foe.x); if (!this.nearBase() && kind.includes('frost')) this.addEffect('slowing',1500,.2); if (!this.nearBase() && kind.includes('fungal')) this.addEffect('poison',2000,1); } });
-            this.physics.add.overlap(this.player, this.hostile, (_p, s) => { const shot = s as Phaser.Physics.Arcade.Sprite; this.damage(shot.getData('damage'), shot.x, 'enemy-projectile'); shot.destroy(); });
+            this.physics.add.overlap(this.player, this.hostile, (_p, s) => {
+                const shot = s as Phaser.Physics.Arcade.Sprite;
+                if (this.reflectLightsaberShot(shot)) return;
+                this.damage(shot.getData('damage'), shot.x, 'enemy-projectile');
+                shot.destroy();
+            });
             this.target = this.add.graphics().setDepth(12);
             this.light = this.add.graphics().setDepth(20).setScrollFactor(0);
             this.drawBase();
+            this.cameras.main.setBounds(-WORLD_LIMIT * TILE, 0, WORLD_LIMIT * TILE * 2, DEPTH * TILE);
+            this.cameras.main.centerOn(this.player.x, this.player.y - 30);
             this.cameras.main.startFollow(this.player, true, .13, .13, 0, 30);
             this.cameras.main.setDeadzone(110, 60);
-            this.cameras.main.setBounds(-WORLD_LIMIT * TILE, 0, WORLD_LIMIT * TILE * 2, DEPTH * TILE);
             this.chunks.ensure(p.x, p.y);
+            while (this.chunks.pending.length) this.chunks.step();
             this.physics.pause();
             this.emit();
+            this.restoreWorldCreations();
+            if (w.settings.difficulty === 'boss' && w.generator >= 2) {
+                void this.transact((_b, world) => {
+                    world.discoveredBosses ??= [];
+                    let added = 0;
+                    for (const site of bossSites(world.settings)) {
+                        if (!world.discoveredBosses.includes(site.id)) {
+                            world.discoveredBosses.push(site.id);
+                            added++;
+                        }
+                    }
+                    if (added) return 'Boss mode: shrines are marked on the HUD and map. Follow the arrows and press E.';
+                });
+            }
             if(import.meta.env.DEV&&verification)verification({
                 read:()=>{const body=this.player.body as Phaser.Physics.Arcade.Body;return {x:this.player.x,y:this.player.y,vx:body.velocity.x,vy:body.velocity.y,grounded:body.blocked.down||body.touching.down,blockedLeft:body.blocked.left,blockedRight:body.blocked.right,health:this.health,mana:this.mana,status:this.status,clock:this.clock,chunks:this.chunks.active.size,bodies:this.chunks.bodyCount,fps:this.game.loop.actualFps,busy:this.busy,message:this.message,recall:this.recallStart,enemies:this.foes.getChildren().map(obj=>{const f=obj as Phaser.Physics.Arcade.Sprite;return {id:f.getData('id'),kind:f.getData('kind'),x:f.x,y:f.y,hp:f.getData('hp'),state:f.getData('state')};})};},
                 hold:keys=>{const next=new Set(keys);for(const key of next)if(!this.held.has(key))this.fresh.add(key);this.held=next;},
@@ -280,27 +310,176 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 castBlink:()=>this.castBlink(),castShield:()=>this.castShield()
             });
         }
-        drawBase() { const y = 22 * TILE, g = this.add.graphics().setDepth(2); g.fillStyle(0x1b3645); g.fillRect(6 * TILE, y - 104, 23 * TILE, 104); g.lineStyle(3, 0x83bcbb); g.strokeRect(6 * TILE, y - 104, 23 * TILE, 104); g.fillStyle(0x35515a); g.fillRect(6 * TILE, y - 104, 23 * TILE, 10); g.fillStyle(0x85eace); g.fillRect(8 * TILE, y - 65, 7, 60); for (const [x, name, color] of [[12, 'WORKBENCH', 0xcca176], [16, 'FORGE', 0xf0ae6d], [20, 'COOKING', 0xe08a4a], [25, 'TERMINAL', 0x8dd8f3]] as const) {
-            g.fillStyle(color);
-            g.fillRect(x * TILE - 18, y - 30, 36, 30);
-            // Cooking station spit detail
-            if (name === 'COOKING') {
-                g.fillStyle(0x5a3a28);
-                g.fillRect(x * TILE - 10, y - 38, 3, 12);
-                g.fillRect(x * TILE + 7, y - 38, 3, 12);
-                g.fillStyle(0xc9c0a8);
-                g.fillRect(x * TILE - 10, y - 40, 20, 3);
-                g.fillStyle(0xff9a4a);
-                g.fillCircle(x * TILE, y - 18, 5);
+        drawBase() {
+            const y = 22 * TILE, g = this.add.graphics().setDepth(2);
+            g.fillStyle(0x1b3645); g.fillRect(6 * TILE, y - 104, 23 * TILE, 104);
+            g.lineStyle(3, 0x83bcbb); g.strokeRect(6 * TILE, y - 104, 23 * TILE, 104);
+            g.fillStyle(0x35515a); g.fillRect(6 * TILE, y - 104, 23 * TILE, 10);
+            g.fillStyle(0x85eace); g.fillRect(8 * TILE, y - 65, 7, 60);
+            for (const [x, name, color] of [[12, 'WORKBENCH', 0xcca176], [16, 'FORGE', 0xf0ae6d], [20, 'COOKING', 0xe08a4a], [25, 'MARKET', 0xf0cb87]] as const) {
+                if (name === 'MARKET') {
+                    g.fillStyle(0xa33b3b);
+                    g.fillTriangle(x * TILE - 24, y - 34, x * TILE, y - 56, x * TILE + 24, y - 34);
+                    g.fillStyle(0xc45a4a);
+                    g.fillRect(x * TILE - 22, y - 36, 44, 8);
+                    g.fillStyle(0x6d4c3d);
+                    g.fillRect(x * TILE - 20, y - 28, 40, 28);
+                    g.fillStyle(0xf0cb87);
+                    g.fillRect(x * TILE - 18, y - 18, 36, 8);
+                    g.fillStyle(0xffe08a);
+                    g.fillCircle(x * TILE - 8, y - 22, 3);
+                    g.fillCircle(x * TILE - 3, y - 20, 3);
+                    g.fillCircle(x * TILE + 2, y - 22, 3);
+                    g.fillStyle(0x62dfc3);
+                    g.fillRect(x * TILE + 8, y - 32, 8, 12);
+                    g.fillStyle(0xdce9ec);
+                    g.fillRect(x * TILE + 9, y - 36, 6, 5);
+                } else {
+                    g.fillStyle(color);
+                    g.fillRect(x * TILE - 18, y - 30, 36, 30);
+                    if (name === 'COOKING') {
+                        g.fillStyle(0x5a3a28);
+                        g.fillRect(x * TILE - 10, y - 38, 3, 12);
+                        g.fillRect(x * TILE + 7, y - 38, 3, 12);
+                        g.fillStyle(0xc9c0a8);
+                        g.fillRect(x * TILE - 10, y - 40, 20, 3);
+                        g.fillStyle(0xff9a4a);
+                        g.fillCircle(x * TILE, y - 18, 5);
+                    }
+                }
+                this.add.text(x * TILE, y - 58, name, { fontFamily: 'monospace', fontSize: '9px', color: '#bce4dd' }).setOrigin(.5).setDepth(3);
             }
-            this.add.text(x * TILE, y - 52, name, { fontFamily: 'monospace', fontSize: '9px', color: '#bce4dd' }).setOrigin(.5).setDepth(3);
-        } this.add.text(8 * TILE, y - 86, 'LUMEN OUTPOST', { fontFamily: 'monospace', fontSize: '12px', color: '#94f3ce' }).setDepth(3); }
+            this.add.text(8 * TILE, y - 86, 'LUMEN OUTPOST', { fontFamily: 'monospace', fontSize: '12px', color: '#94f3ce' }).setDepth(3);
+        }
         nearStation(materials: number[]) {
             const tx=Math.floor(this.player.x/TILE),ty=Math.floor(this.player.y/TILE);
             for(let dx=-3;dx<=3;dx++)for(let dy=-2;dy<=2;dy++)if(materials.includes(readTile(store.world,tx+dx,ty+dy)))return true;
             return false;
         }
-        nearBase() { return Math.abs(this.player.x - 16 * TILE) < 320 && Math.abs(this.player.y - 22 * TILE) < 120; }
+        stationFocus(): SandboxHud['stationFocus'] {
+            const px = this.player.x, py = this.player.y;
+            const tx = Math.floor(px / TILE), ty = Math.floor(py / TILE);
+            type Kind = NonNullable<SandboxHud['stationFocus']>;
+            const hits: { kind: Kind; dist: number }[] = [];
+            for (let dx = -3; dx <= 3; dx++) for (let dy = -2; dy <= 2; dy++) {
+                const mat = readTile(store.world, tx + dx, ty + dy);
+                const dist = Math.hypot(dx, dy);
+                if (mat === 32 || mat === 35) hits.push({ kind: 'workbench', dist });
+                if (mat === 33) hits.push({ kind: 'furnace', dist });
+                if (mat === 34) hits.push({ kind: 'cooking', dist });
+            }
+            if (this.nearBase() && Math.abs(py - 22 * TILE) < 110) {
+                for (const [sx, kind] of [[12, 'workbench'], [16, 'forge'], [20, 'cooking'], [25, 'terminal']] as const) {
+                    const dist = Math.abs(px - sx * TILE) / TILE;
+                    if (dist < 2.1) hits.push({ kind, dist });
+                }
+            }
+            if (!hits.length) return undefined;
+            hits.sort((a, b) => a.dist - b.dist);
+            return hits[0]!.kind;
+        }
+        nearBase() { return inOutpost(this.player.x, this.player.y); }
+        placeFoeOpen(f: Phaser.Physics.Arcade.Sprite, flying: boolean) {
+            const w = store.world;
+            const startTx = Math.floor(f.x / TILE), startTy = Math.floor(f.y / TILE);
+            const spriteH = Math.max(f.displayHeight || 48, 48);
+            const air = Math.max(4, Math.min(12, Math.ceil(spriteH / TILE) + 1));
+            let found: { tx: number; ty: number } | undefined;
+            for (const dx of [0, 1, -1, 2, -2, 3, -3, 4, -4, 6, -6, 8, -8, 10, -10, 12, -12]) {
+                for (let dy = -12; dy <= 18; dy++) {
+                    const tx = startTx + dx, ty = startTy + dy;
+                    if (ty < 3 || ty >= DEPTH - 4) continue;
+                    let blocked = false;
+                    for (let i = 0; i < air; i++) if (solid(w, tx, ty - i)) { blocked = true; break; }
+                    if (blocked) continue;
+                    if (!flying && !solid(w, tx, ty + 1)) continue;
+                    if (inOutpost((tx + 0.5) * TILE, (ty + 1) * TILE, 80)) continue;
+                    found = { tx, ty };
+                    break;
+                }
+                if (found) break;
+            }
+            if (found) {
+                const x = (found.tx + 0.5) * TILE;
+                const floor = (found.ty + 1) * TILE;
+                const y = flying
+                    ? floor - Math.min(spriteH * 0.5 + 24, Math.max(TILE * 3, air * TILE * 0.55))
+                    : calculateSafeSurfaceSpawnY(floor, spriteH, false);
+                f.setPosition(x, y);
+                (f.body as Phaser.Physics.Arcade.Body | undefined)?.reset(x, y);
+            }
+            const body = f.body as Phaser.Physics.Arcade.Body | undefined;
+            const hw = (body?.width ?? 28) / 2, hh = (body?.height ?? 32) / 2;
+            for (let n = 0; n < 32; n++) {
+                const samples = [
+                    [f.x - hw + 3, f.y - hh + 3], [f.x + hw - 3, f.y - hh + 3], [f.x, f.y],
+                    [f.x - hw + 3, f.y + hh - 3], [f.x + hw - 3, f.y + hh - 3],
+                ];
+                if (samples.every(([px, py]) => !solid(w, Math.floor(px / TILE), Math.floor(py / TILE)))) break;
+                f.y -= 10;
+                body?.reset(f.x, f.y);
+            }
+        }
+        dressBoss(f: Phaser.Physics.Arcade.Sprite, kind: string, stats: (typeof ENEMIES)[string]) {
+            const key = this.textures.exists(kind) ? kind : this.textures.exists(stats.texture) ? stats.texture : 'sentinel';
+            try { if (f.texture.key !== key && this.textures.exists(key)) f.setTexture(key); } catch { /* keep current frame */ }
+            const scale = store.world.settings.difficulty === 'boss' ? 2.15 : 1.7;
+            f.setData('showScale', scale);
+            f.setData('originFeet', false);
+            f.setDepth(9);
+            f.setOrigin(0.5, 0.5);
+            f.setScale(scale);
+            applyBossHurtbox(f);
+        }
+        connectShot(shot: Phaser.Physics.Arcade.Sprite, foe: Phaser.Physics.Arcade.Sprite) {
+            if (!shot.active || !foe.active || foe.getData('dying')) return;
+            let hitFoes = shot.getData('hitFoes') as Set<string> | undefined;
+            if (!hitFoes) { hitFoes = new Set(); shot.setData('hitFoes', hitFoes); }
+            const foeId = foe.getData('id') as string;
+            if (hitFoes.has(foeId)) return;
+            hitFoes.add(foeId);
+
+            const dmg = shot.getData('damage');
+            const eff = shot.getData('statusEffect');
+            if (!shot.getData('isExplosive')) this.hit(foe, dmg, eff);
+            if (shot.getData('chain')) {
+                const visited = new Set([foe]); let from=foe;
+                for(let n=0;n<2;n++) {
+                    const target=(this.foes.getChildren() as Phaser.Physics.Arcade.Sprite[]).filter(f=>!visited.has(f)&&!f.getData('dying')&&Math.hypot(f.x-from.x,f.y-from.y)<130&&clearLine(store.world,from.x,from.y,f.x,f.y)).sort((a,b)=>Phaser.Math.Distance.Between(a.x,a.y,from.x,from.y)-Phaser.Math.Distance.Between(b.x,b.y,from.x,from.y))[0];
+                    if(!target)break;this.hit(target,dmg*.7);visited.add(target);this.burst(target.x,target.y,0x18ffff);from=target;
+                }
+                shot.destroy();return;
+            }
+
+            if (shot.getData('isExplosive')) {
+                this.explodeShot(shot.x, shot.y, dmg);
+                shot.destroy();
+                return;
+            }
+
+            const pierce = shot.getData('pierce');
+            if (typeof pierce === 'number' && pierce > 1) {
+                shot.setData('pierce', pierce - 1);
+                this.burst(shot.x, shot.y, 0x82eeef);
+            } else {
+                shot.destroy();
+            }
+        }
+        shotsVsBosses() {
+            const shots = this.shots.getChildren() as Phaser.Physics.Arcade.Sprite[];
+            const foes = this.foes.getChildren() as Phaser.Physics.Arcade.Sprite[];
+            for (const shot of shots) {
+                if (!shot.active) continue;
+                for (const foe of foes) {
+                    if (!foe.active || foe.getData('dying') || !isBossLike(foe)) continue;
+                    const b = foe.getBounds();
+                    const pad = 36;
+                    if (shot.x < b.x - pad || shot.x > b.right + pad || shot.y < b.y - pad || shot.y > b.bottom + pad) continue;
+                    this.connectShot(shot, foe);
+                    if (!shot.active) break;
+                }
+            }
+        }
         emit() {
             if(this.status==='dead')this.creator?.runtime.death();
             if (disposed || !this.player) return;
@@ -316,6 +495,11 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             if (this.nearProspectorTotem) activeList.push({ type: 'prospector_aura', name: 'Prospector Aura', icon: '⛏️', remainingMs: 999000 });
             if (this.nearArcaneTotem) activeList.push({ type: 'arcane_aura', name: 'Arcane Aura', icon: '✦', remainingMs: 999000 });
 
+            const focus = this.stationFocus();
+            if (this.clock >= this.noticeUntil) {
+                if (focus === 'terminal') this.message = 'Market — press E to sell items and buy skins';
+                else if (this.message.startsWith('Market —')) this.message = 'Hold E to chop trees (~1.2s) · Mine iron with J · Visit the workbench';
+            }
             onHud({
                 health: Math.ceil(this.health),
                 maxHealth: stats.maxHealth,
@@ -323,16 +507,42 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 maxMana: stats.maxMana,
                 hunger: store.world.hunger ?? 100,
                 storageKey: this.storageKey,
-                boss: (() => { const b = this.foes.getChildren().find(o => (o as Phaser.Physics.Arcade.Sprite).getData('boss')) as Phaser.Physics.Arcade.Sprite | undefined; return b ? { name: BOSS_REGISTRY[b.getData('kind')].name, hp: Math.ceil(b.getData('hp')), maxHp: b.getData('maxHp'), phase: b.getData('hp') / b.getData('maxHp') < .5 ? 2 : 1 } : undefined; })(),
+                boss: (() => {
+                    const nearby = (this.foes.getChildren() as Phaser.Physics.Arcade.Sprite[])
+                        .filter(f => {
+                            if (!f.active || f.getData('dying')) return false;
+                            const kind = f.getData('kind') as string;
+                            return !!(f.getData('boss') || f.getData('showcase') || f.getData('creator') || BOSS_REGISTRY[kind]);
+                        })
+                        .map(f => ({ f, d: Math.hypot(f.x - this.player.x, f.y - this.player.y) }))
+                        .filter(n => n.d < 560 && !(this.nearBase() && n.f.getData('creator')))
+                        .sort((a, b) => a.d - b.d)[0];
+                    if (!nearby) return undefined;
+                    const f = nearby.f;
+                    const kind = f.getData('kind') as string;
+                    const creatorId = f.getData('creator') as string | undefined;
+                    const created = creatorId ? this.creator?.runtime.actors.get(creatorId) : undefined;
+                    const name = created?.spec.name || BOSS_REGISTRY[kind]?.name || ENEMIES[kind]?.name || kind;
+                    const hp = Math.ceil(f.getData('hp') || created?.hp || 0);
+                    const maxHp = f.getData('maxHp') || created?.spec.stats.health || hp || 1;
+                    return { name, hp, maxHp, phase: hp / maxHp < .5 ? 2 : 1 };
+                })(),
                 defense: stats.defense + (this.nearWardingTotem ? 5 : 0),
                 status: this.status,
                 biome: biome(store.world.settings, Math.floor(this.player.x / TILE), Math.floor(this.player.y / TILE)),
                 selected: this.selected,
                 message: this.message,
                 nearBase: this.nearBase(),
-                nearCrafting: this.nearBase() || this.nearStation([32,35]),
-                nearFurnace: this.nearBase() || this.nearStation([33]),
-                nearCooking: this.nearBase() || this.nearStation([34]),
+                stationFocus: focus,
+                nearCrafting: focus === 'workbench' || focus === 'forge',
+                nearFurnace: focus === 'furnace',
+                nearCooking: focus === 'cooking',
+                ammo: count(store.world.inventory, 'ammo'),
+                bossHunt: store.world.generator >= 2 ? bossSites(store.world.settings).map(site => {
+                    const dx = site.x * TILE - this.player.x, dy = site.floor * TILE - this.player.y;
+                    const dir = Math.abs(dx) >= Math.abs(dy) * 0.65 ? (dx >= 0 ? 'east' : 'west') : dy >= 0 ? 'below' : 'above';
+                    return { id: site.id, name: BOSS_REGISTRY[site.id].name, tiles: Math.round(Math.hypot(dx, dy) / TILE), dir, defeated: store.world.defeated.includes(`boss:${site.id}`) };
+                }) : undefined,
                 fps: Math.round(this.game.loop.actualFps),
                 chunks: this.chunks.active.size,
                 enemies: this.foes.countActive(),
@@ -345,6 +555,48 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             });
         }
         notify(m: string) { sound.play(m.includes('awakens') ? 'boss' : 'reward'); gameAudio.unlock(); this.message = m; this.noticeUntil = this.clock + 4500; this.emit(); }
+        drawBossShowcases() {
+            this.bossArt.clear();
+            const t = this.clock / 1000;
+            for (const obj of this.foes.getChildren()) {
+                const f = obj as Phaser.Physics.Arcade.Sprite;
+                const kind = f.getData('kind') as string;
+                if (!f.active || f.getData('creator') || (!f.getData('showcase') && !BOSS_REGISTRY[kind])) continue;
+                const def = BOSS_REGISTRY[kind];
+                const name = def?.name || ENEMIES[kind]?.name || kind;
+                const hp = Math.max(0, Math.ceil(f.getData('hp') || 0));
+                const max = Math.max(1, f.getData('maxHp') || hp || 1);
+                const hunting = this.clock < (f.getData('memory') || 0) || ['chase', 'hunting', 'windup', 'burst'].includes(f.getData('state')) || f.getData('boss');
+                const state = f.getData('dying') ? 'defeated' : hunting ? 'hunting' : (f.getData('state') || 'patrol');
+                const color = parseHexColor(def?.phases[0]?.attacks[0]?.telegraphColor, 0xc47a3a);
+                const feet = !!f.getData('originFeet');
+                const cx = f.x, cy = feet ? f.y - f.displayHeight / 2 : f.y;
+                const top = feet ? f.y - f.displayHeight : f.y - f.displayHeight / 2;
+                const radX = Math.max(90, f.displayWidth * 0.55);
+                const radY = Math.max(58, f.displayHeight * 0.32);
+                for (let i = 0; i < 8; i++) {
+                    const a = t * 1.35 + i * Math.PI * 2 / 8;
+                    const ox = cx + Math.cos(a) * radX, oy = cy + Math.sin(a) * radY;
+                    this.bossArt.fillStyle(color, 0.95);
+                    this.bossArt.fillRect(ox - 10, oy - 7, 20, 14);
+                    this.bossArt.fillStyle(0x5d4037, 0.9);
+                    this.bossArt.fillRect(ox - 10, oy - 2, 20, 3);
+                }
+                this.bossArt.fillStyle(0x112032, 0.92);
+                this.bossArt.fillRect(cx - 110, top - 28, 220, 22);
+                let label = f.getData('hud') as Phaser.GameObjects.Text | undefined;
+                if (!label || !label.active) {
+                    label = this.add.text(cx, top - 17, '', { fontFamily: 'monospace', fontSize: '13px', color: '#efffff' }).setOrigin(0.5).setDepth(16);
+                    f.setData('hud', label);
+                    f.once('destroy', () => { if (label?.active) label.destroy(); });
+                }
+                label.setPosition(cx, top - 17).setText(`${name} · ${hp}/${max} · ${state}`);
+                this.bossArt.fillStyle(0x162333);
+                this.bossArt.fillRect(cx - 80, top - 6, 160, 8);
+                this.bossArt.fillStyle(0xef7788);
+                this.bossArt.fillRect(cx - 80, top - 6, 160 * Math.max(0, Math.min(1, hp / max)), 8);
+            }
+        }
         async transact(action: Parameters<SaveStore['transact']>[0]) { if(disposed)return false; try {
             const result = await store.transact(action);
             if(disposed)return false;
@@ -361,6 +613,64 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             this.particles.add(p);
             this.tweens.add({ targets: p, x: x + (i - 2) * 10, y: y - 10 - Math.random() * 20, alpha: 0, duration: 300, onComplete: () => { this.particles.delete(p); p.destroy(); } });
         } }
+        saberAim() {
+            return this.cursor.known
+                ? new Phaser.Math.Vector2(this.cursor.x - this.player.x, this.cursor.y - this.player.y).normalize()
+                : new Phaser.Math.Vector2(this.facing, 0);
+        }
+        saberCanCatch(x: number, y: number, incoming?: Phaser.Math.Vector2) {
+            if (this.status !== 'playing' || store.world.inventory[this.selected]?.id !== 'lightsaber') return false;
+            const swinging = this.clock < this.saberReflectUntil;
+            const to = new Phaser.Math.Vector2(x - this.player.x, y - this.player.y);
+            const dist = to.length();
+            if (dist > (swinging ? 96 : 82)) return false;
+            const aim = this.saberAim();
+            if (incoming && incoming.lengthSq() > 40)
+                return incoming.clone().normalize().dot(aim) < (swinging ? 0.2 : -0.25);
+            if (dist < 8) return swinging;
+            return to.normalize().dot(aim) > (swinging ? 0.05 : 0.38);
+        }
+        tryLightsaberDeflectPoint(x: number, y: number, incomingAngle: number) {
+            const incoming = new Phaser.Math.Vector2(Math.cos(incomingAngle), Math.sin(incomingAngle));
+            if (!this.saberCanCatch(x, y, incoming)) return false;
+            this.burst(x, y, 0x69f0ae);
+            sound.play('attack');
+            gameAudio.weapon('melee');
+            return true;
+        }
+        reflectLightsaberShot(shot: Phaser.Physics.Arcade.Sprite) {
+            if (!shot.active || shot.getData('reflected')) return false;
+            const body = shot.body as Phaser.Physics.Arcade.Body | undefined;
+            const incoming = new Phaser.Math.Vector2(body?.velocity.x ?? 0, body?.velocity.y ?? 0);
+            if (!this.saberCanCatch(shot.x, shot.y, incoming)) return false;
+            const aim = this.saberAim();
+            let dir = incoming.lengthSq() > 80 ? incoming.normalize().scale(-1) : aim.clone();
+            let nearest: Phaser.Physics.Arcade.Sprite | undefined;
+            let best = 0.12;
+            for (const obj of this.foes.getChildren()) {
+                const f = obj as Phaser.Physics.Arcade.Sprite;
+                if (!f.active || f.getData('dying')) continue;
+                const toF = new Phaser.Math.Vector2(f.x - this.player.x, f.y - this.player.y);
+                if (toF.length() < 10) continue;
+                const aligned = toF.normalize().dot(aim);
+                if (aligned > best) { best = aligned; nearest = f; }
+            }
+            if (nearest) dir = new Phaser.Math.Vector2(nearest.x - shot.x, nearest.y - shot.y).normalize();
+            const speed = Math.max(incoming.length(), 320);
+            const damage = Math.max(12, shot.getData('damage') || 12);
+            const px = shot.x, py = shot.y;
+            shot.destroy();
+            if (this.shots.countActive() < 48) {
+                const bounced = dressProjectile(this.shots.create(px, py, 'shot') as Phaser.Physics.Arcade.Sprite);
+                bounced.setTint(0x69f0ae);
+                bounced.setVelocity(dir.x * speed, dir.y * speed).setRotation(Math.atan2(dir.y, dir.x));
+                bounced.setData({ damage, expires: this.clock + 1800, reflected: true });
+            }
+            this.burst(px, py, 0x69f0ae);
+            sound.play('attack');
+            gameAudio.weapon('melee');
+            return true;
+        }
         pause() { if (this.status === 'dead')
             return; this.status = 'paused'; this.time.paused = true; this.physics.pause(); this.held.clear(); this.fresh.clear(); this.tweens.pauseAll(); this.recallStart = 0; this.emit(); void this.save().catch(() => { }); }
         resume() { sound.unlock(); gameAudio.unlock(); if (this.status === 'dead')
@@ -382,13 +692,15 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         respawn() {
             this.creator?.runtime.death();
             this.held.clear(); this.fresh.clear(); this.buffer = -1000; this.lastGround = -1000; this.fallPeak = 0; this.fallStartY = 0; this.fallAirSince = 0; this.wasGrounded = true;
-            this.jumped = false; this.knockUntil = 0; this.lastAttack = -1000; this.lastMagic = -1000;
+            this.jumped = false; this.knockUntil = 0; this.lastAttack = -1000; this.lastMagic = -1000; this.saberReflectUntil = 0;
             this.mining = {key: '', progress: 0}; this.cursor.known = false;
             this.activeEffects = [];
             this.shieldBudget = 0;
-            this.spawnGraceUntil = this.clock + (store.world.settings.difficulty === 'extreme' ? 1800 : 6000);
+            this.spawnGraceUntil = this.clock + (store.world.settings.difficulty === 'extreme' ? 1800 : store.world.settings.difficulty === 'boss' ? 2500 : 6000);
             const stats = derivePlayerStats(store.world, this.activeEffects);
             this.health = stats.maxHealth; this.mana = stats.maxMana;
+            store.world.hunger = 100;
+            void this.transact((_b, w) => { w.hunger = 100; return ''; });
             this.hurtUntil = this.clock + 2000; this.recallStart = 0;
             this.shots.clear(true, true); this.hostile.clear(true, true); for(const f of [...this.foes.getChildren()])if(!f.getData('creator'))f.destroy(); this.wildlife.group.clear(true, true);
             this.player.setVelocity(0).setAcceleration(0);
@@ -397,6 +709,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             this.status = 'playing';
             this.time.paused = false;
             this.tweens.resumeAll();
+            this.physics.resume();
             this.chunks.ensure(this.player.x, this.player.y);
             this.notify('Returned to the outpost. Inventory, coins, and skins retained.');
         }
@@ -474,7 +787,24 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             this.emit();
         }
         hit(f: Phaser.Physics.Arcade.Sprite, damage: number, statusEffect?: string, fromEnemy = false) {
-            if(f.getData('creator')) { if(!fromEnemy) this.creator?.runtime.hit(f.getData('creator'),damage); if(f.active)f.setData('hp',this.creator?.runtime.actors.get(f.getData('creator'))?.hp); return; }
+            if(f.getData('creator')) {
+                const creatorId = f.getData('creator') as string;
+                if(!fromEnemy) this.creator?.runtime.hit(creatorId,damage);
+                const actor = this.creator?.runtime.actors.get(creatorId);
+                if(f.active)f.setData('hp', actor?.hp);
+                if (actor?.defeated) {
+                    void this.transact((_b, w) => {
+                        const rec = (w.creations ?? []).find(c => c.spec.id === creatorId);
+                        if (!rec || rec.defeated) return '';
+                        rec.defeated = true;
+                        const reward = forgeBossReward(actor.spec.stats.health);
+                        w.coins += reward;
+                        noteDiscovery(w, 'enemy', creatorId);
+                        return `${actor.spec.name} defeated! +${reward} coins. Bound to this world.`;
+                    });
+                }
+                return;
+            }
             if (f.getData('dying')) return;
             // Mobs never damage other mobs
             if (fromEnemy && f.getData('team') === 'enemy') return;
@@ -528,12 +858,13 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 const deathKind = kind;
                 if (deathKind === 'bomber' || deathKind === 'explosion_bot' || deathKind.includes('volatile')) {
                     // Enemy death blasts only hurt the player — never allies / terrain under packs
-                    this.explode(f.x, f.y, { carve: false, source: 'enemy' });
+                    this.explode(f.x, f.y, { carve: true, source: 'enemy' });
                 }
                 void this.transact((_b, w) => {
                     if (w.defeated.includes(id)) return '';
                     w.defeated.push(id);
                     w.progress.kills++;
+                    noteDiscovery(w, 'enemy', kind);
                     if (f.getData('boss')) {
                         const boss = BOSS_REGISTRY[kind]; w.coins += boss.coinReward;
                         for (const drop of boss.lootTable) if (!add(w.inventory,drop.item,drop.guaranteedCount)) {
@@ -583,7 +914,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
          */
         explode(x: number, y: number, opts?: { carve?: boolean; source?: 'enemy' | 'player' }) {
             const fromEnemy = opts?.source === 'enemy';
-            const carve = opts?.carve ?? !fromEnemy;
+            const carve = opts?.carve ?? true;
             this.burst(x, y, 0xff4400);
             this.burst(x, y, 0xffcc66);
             for (let i = 0; i < 12; i++) {
@@ -592,8 +923,13 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             if (this.shake) this.cameras.main.shake(220, .012);
             if (Math.hypot(this.player.x - x, this.player.y - y) <= 5 * TILE)
                 this.damage(60, x);
-            // Never damage other foes from an enemy blast (friendly fire off)
-            if (fromEnemy) return;
+            if (!fromEnemy) {
+                for (const obj of [...this.foes.getChildren(), ...this.wildlife.group.getChildren()]) {
+                    const f = obj as Phaser.Physics.Arcade.Sprite;
+                    if (f.active && !f.getData('dying') && Math.hypot(f.x - x, f.y - y) <= 5 * TILE)
+                        this.hit(f, 40);
+                }
+            }
             if (!carve) return;
             const ox = Math.floor(x / TILE), oy = Math.floor(y / TILE);
             const cleared: Array<[number, number]> = [];
@@ -602,7 +938,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                     for (let dy = -5; dy <= 5; dy++) {
                         if (dx * dx + dy * dy > 25) continue;
                         const tx = ox + dx, ty = oy + dy;
-                        if (protectedTile(tx, ty)) continue;
+                        if (protectedTile(tx, ty) || inOutpost((tx + .5) * TILE, (ty + .5) * TILE)) continue;
                         try {
                             const current = readTile(w, tx, ty);
                             if (current && current !== 6) {
@@ -638,23 +974,20 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 if (!w.defeated.includes(id)) w.defeated.push(id);
                 return '';
             });
-            this.explode(x, y, { carve: false, source: 'enemy' });
+            this.explode(x, y, { carve: true, source: 'enemy' });
             this.notify('Explosion bot detonated!');
         }
         castBlink() {
-            if (this.status !== 'playing' || this.clock - this.lastBlink < 3000) return;
-            if (this.mana < 25) {
-                this.notify('Low mana. Blink requires 25 mana.');
-                return;
-            }
+            if (this.status !== 'playing') return;
+            const fromX = this.player.x, fromY = this.player.y;
             const aim = this.cursor.known
-                ? new Phaser.Math.Vector2(this.cursor.x - this.player.x, this.cursor.y - this.player.y)
+                ? new Phaser.Math.Vector2(this.cursor.x - fromX, this.cursor.y - fromY)
                 : new Phaser.Math.Vector2(this.facing, 0);
             const dist = Math.min(130, Math.max(40, aim.length() || 120));
             const dir = aim.normalize();
-            const destX = this.player.x + dir.x * dist;
-            const destY = this.player.y + dir.y * dist;
-            const blocked = !this.chunks.ready(destX, destY) || !clearLine(store.world, this.player.x, this.player.y, destX, destY)
+            const destX = fromX + dir.x * dist;
+            const destY = fromY + dir.y * dist;
+            const blocked = !this.chunks.ready(destX, destY) || !clearLine(store.world, fromX, fromY, destX, destY)
                 || [-10, 10].some(dx => [-20, 0, 22].some(dy => solid(store.world, Math.floor((destX + dx) / TILE), Math.floor((destY + dy) / TILE))));
 
             if (blocked) {
@@ -662,14 +995,21 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 return;
             }
 
-            this.mana -= 25;
-            this.lastBlink = this.clock;
-            this.lastMagic = this.clock;
-            this.burst(this.player.x, this.player.y, 0x9b59b6);
+            this.burst(fromX, fromY, 0x9b59b6);
             this.player.setPosition(destX, destY);
             this.safe = { x: destX, y: destY };
             this.burst(destX, destY, 0x00e5ff);
-            this.notify('✦ Blink teleport!');
+            const seg = destX - fromX, sey = destY - fromY, len2 = seg * seg + sey * sey || 1;
+            let struck = 0;
+            for (const obj of this.foes.getChildren()) {
+                const f = obj as Phaser.Physics.Arcade.Sprite;
+                if (!f.active || f.getData('dying')) continue;
+                const t = Math.max(0, Math.min(1, ((f.x - fromX) * seg + (f.y - fromY) * sey) / len2));
+                if (Math.hypot(f.x - (fromX + seg * t), f.y - (fromY + sey * t)) > 40) continue;
+                this.hit(f, 5);
+                struck++;
+            }
+            if (struck) this.notify(`Blink · 5 damage × ${struck}`);
             this.emit();
         }
         castShield() {
@@ -781,79 +1121,81 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 this.notify('Low mana. Let your energy recharge.');
                 return;
             }
-            if (this.shots.countActive() >= 35) return;
+            const spendsAmmo = item !== 'lightsaber';
+            if (spendsAmmo && count(store.world.inventory, 'ammo') < 1) {
+                sound.play('ui');
+                this.lastAttack = this.clock;
+                this.notify('No ammo. Loot chests or buy ammo at the outpost.');
+                return;
+            }
+            if (weapon.type !== 'melee' && this.shots.countActive() >= 35) return;
 
             const cue = weapon.type === 'melee' ? 'melee' : weapon.type === 'magic' ? 'magic' : 'ranged';
             sound.play('attack'); gameAudio.weapon(cue);
             this.lastAttack = this.clock;
             this.mana -= weapon.mana;
             if (weapon.mana) this.lastMagic = this.clock;
+            if (spendsAmmo) void this.transact((_b, w) => { remove(w.inventory, 'ammo', 1); return ''; });
 
-            // Melee weapons
-            if (weapon.type === 'melee' || ['sword', 'sword_long', 'spear', 'hammer_heavy'].includes(item)) {
+            const aim = this.cursor.known ? new Phaser.Math.Vector2(this.cursor.x - this.player.x, this.cursor.y - this.player.y).normalize() : new Phaser.Math.Vector2(this.facing, 0);
+            const ang = Math.atan2(aim.y, aim.x);
+
+            // Melee weapons — hit in the mouse/aim direction
+            if (weapon.type === 'melee' || ['sword', 'sword_long', 'spear', 'hammer_heavy', 'lightsaber'].includes(item)) {
+                const reach = weapon.range || 72;
                 if (item === 'spear') {
                     const spearG = this.add.graphics().setDepth(12);
                     spearG.lineStyle(4, 0x64b5f6, 0.95);
-                    const reach = weapon.range || 82;
-                    spearG.lineBetween(this.player.x, this.player.y, this.player.x + this.facing * reach, this.player.y);
+                    spearG.lineBetween(this.player.x, this.player.y, this.player.x + aim.x * reach, this.player.y + aim.y * reach);
                     spearG.fillStyle(0xe1f5fe, 1);
                     spearG.fillTriangle(
-                        this.player.x + this.facing * reach, this.player.y,
-                        this.player.x + this.facing * (reach - 14), this.player.y - 6,
-                        this.player.x + this.facing * (reach - 14), this.player.y + 6
+                        this.player.x + aim.x * reach, this.player.y + aim.y * reach,
+                        this.player.x + aim.x * (reach - 14) - aim.y * 6, this.player.y + aim.y * (reach - 14) + aim.x * 6,
+                        this.player.x + aim.x * (reach - 14) + aim.y * 6, this.player.y + aim.y * (reach - 14) - aim.x * 6
                     );
                     this.tweens.add({ targets: spearG, alpha: 0, duration: 150, onComplete: () => spearG.destroy() });
-                    for (const obj of [...this.foes.getChildren(), ...this.wildlife.group.getChildren()]) {
-                        const f = obj as Phaser.Physics.Arcade.Sprite;
-                        if (Math.abs(f.y - this.player.y) < 32 && (f.x - this.player.x) * this.facing >= 0 && Math.abs(f.x - this.player.x) <= reach && clearLine(store.world, this.player.x, this.player.y, f.x, f.y)) {
-                            this.hit(f, weapon.damage);
-                        }
-                    }
-                    return;
-                }
-
-                if (item === 'hammer_heavy') {
+                } else if (item === 'hammer_heavy') {
+                    const slamX = this.player.x + aim.x * 35;
+                    const slamY = this.player.y + aim.y * 35;
                     const slamG = this.add.graphics().setDepth(12);
                     slamG.lineStyle(4, 0xffb74d, 0.9);
-                    const slamX = this.player.x + this.facing * 35;
-                    const slamY = this.player.y + 15;
                     slamG.strokeCircle(slamX, slamY, 45);
                     slamG.fillStyle(0xffd54f, 0.35);
                     slamG.fillCircle(slamX, slamY, 45);
                     this.tweens.add({ targets: slamG, alpha: 0, scaleX: 1.3, scaleY: 1.3, duration: 200, onComplete: () => slamG.destroy() });
                     if (this.shake) this.cameras.main.shake(120, 0.005);
-                    for (const obj of [...this.foes.getChildren(), ...this.wildlife.group.getChildren()]) {
-                        const f = obj as Phaser.Physics.Arcade.Sprite;
-                        if (Math.hypot(f.x - slamX, f.y - slamY) <= 65 && clearLine(store.world, this.player.x, this.player.y, f.x, f.y)) {
-                            this.hit(f, weapon.damage);
-                            const kbDir = f.x < this.player.x ? -1 : 1;
-                            f.setVelocity(kbDir * (weapon.knockback || 260), -200);
-                        }
-                    }
-                    return;
+                } else {
+                    const isLong = item === 'sword_long' || item === 'lightsaber';
+                    const arcRadius = item === 'lightsaber' ? 78 : isLong ? 82 : 62;
+                    const arcColor = item === 'lightsaber' ? 0x69f0ae : isLong ? 0x69f0ae : 0xb4fff0;
+                    const arc = this.add.graphics().setDepth(12);
+                    arc.lineStyle(item === 'lightsaber' ? 7 : isLong ? 6 : 5, arcColor, 0.95);
+                    arc.beginPath();
+                    arc.arc(this.player.x, this.player.y, arcRadius, ang - 1.05, ang + 1.05);
+                    arc.strokePath();
+                    this.tweens.add({ targets: arc, alpha: 0, duration: 180, onComplete: () => arc.destroy() });
                 }
-
-                // Sword and sword_long
-                const isLong = item === 'sword_long';
-                const arcRadius = isLong ? 82 : 62;
-                const arcColor = isLong ? 0x69f0ae : 0xb4fff0;
-                const arc = this.add.graphics().setDepth(12);
-                arc.lineStyle(isLong ? 6 : 5, arcColor, 0.9);
-                arc.beginPath();
-                arc.arc(this.player.x, this.player.y, arcRadius, this.facing === 1 ? -1.1 : 2, this.facing === 1 ? 1.1 : 4.3);
-                arc.strokePath();
-                this.tweens.add({ targets: arc, alpha: 0, duration: isLong ? 200 : 170, onComplete: () => arc.destroy() });
                 for (const obj of [...this.foes.getChildren(), ...this.wildlife.group.getChildren()]) {
                     const f = obj as Phaser.Physics.Arcade.Sprite;
-                    if (Math.abs(f.x - this.player.x) < (arcRadius + 18) && Math.abs(f.y - this.player.y) < (arcRadius * 0.85) && (f.x - this.player.x) * this.facing >= -12 && clearLine(store.world, this.player.x, this.player.y, f.x, f.y)) {
+                    const toFoe = new Phaser.Math.Vector2(f.x - this.player.x, f.y - this.player.y);
+                    const dist = toFoe.length();
+                    const aligned = dist < 8 || toFoe.normalize().dot(aim) > 0.25;
+                    const extra = isBossLike(f) ? Math.max(f.displayWidth, f.displayHeight) * 0.55 : 0;
+                    const inReach = dist <= reach + 18 + extra;
+                    if (aligned && inReach && clearLine(store.world, this.player.x, this.player.y, f.x, f.y)) {
                         this.hit(f, weapon.damage);
+                        if (item === 'hammer_heavy') f.setVelocity(Math.sign(f.x - this.player.x) * (weapon.knockback || 260), -200);
                     }
+                }
+                if (item === 'lightsaber') {
+                    this.saberReflectUntil = this.clock + 280;
+                    for (const obj of [...this.hostile.getChildren()])
+                        this.reflectLightsaberShot(obj as Phaser.Physics.Arcade.Sprite);
                 }
                 return;
             }
 
             // Projectile weapons (Guns and Magic)
-            const aim = this.cursor.known ? new Phaser.Math.Vector2(this.cursor.x - this.player.x, this.cursor.y - this.player.y).normalize() : new Phaser.Math.Vector2(this.facing, 0);
             const originX = this.player.x + aim.x * 26, originY = this.player.y + aim.y * 26;
             if (!clearLine(store.world, this.player.x, this.player.y, originX, originY))
                 return;
@@ -865,7 +1207,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             if (item === 'blaster_scatter') {
                 const spreads = [-0.28, -0.14, 0, 0.14, 0.28];
                 for (const spr of spreads) {
-                    const shot = this.shots.create(originX, originY, textureKey) as Phaser.Physics.Arcade.Sprite;
+                    const shot = dressProjectile(this.shots.create(originX, originY, textureKey) as Phaser.Physics.Arcade.Sprite);
                     shot.setTint(0xffb74d);
                     const v = aim.clone().rotate(spr).scale(weapon.speed);
                     shot.setVelocity(v.x, v.y).setRotation(v.angle());
@@ -881,7 +1223,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 for (let i = 0; i < spreads.length; i++) {
                     this.time.delayedCall(i * 55, () => {
                         if (disposed || !this.player || this.status !== 'playing' || this.shots.countActive() >= 48) return;
-                        const shot = this.shots.create(this.player.x + aim.x * 26, this.player.y + aim.y * 26, textureKey) as Phaser.Physics.Arcade.Sprite;
+                        const shot = dressProjectile(this.shots.create(this.player.x + aim.x * 26, this.player.y + aim.y * 26, textureKey) as Phaser.Physics.Arcade.Sprite);
                         if (!shot) return;
                         shot.setTint(0x80deea);
                         const v = aim.clone().rotate(spreads[i]).scale(weapon.speed);
@@ -895,7 +1237,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
 
             // Rail rifle (high speed piercing beam)
             if (item === 'rifle_rail') {
-                const shot = this.shots.create(originX, originY, textureKey) as Phaser.Physics.Arcade.Sprite;
+                const shot = dressProjectile(this.shots.create(originX, originY, textureKey) as Phaser.Physics.Arcade.Sprite);
                 shot.setTint(0x00e5ff);
                 shot.setScale(1.5, 1.2);
                 shot.setVelocity(aim.x * weapon.speed, aim.y * weapon.speed).setRotation(aim.angle());
@@ -905,7 +1247,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             }
 
             // Other weapons: single projectile with custom tints & effects
-            const shot = this.shots.create(originX, originY, textureKey) as Phaser.Physics.Arcade.Sprite;
+            const shot = dressProjectile(this.shots.create(originX, originY, textureKey) as Phaser.Physics.Arcade.Sprite);
             shot.setVelocity(aim.x * weapon.speed, aim.y * weapon.speed).setRotation(aim.angle());
             const shotData: Record<string, any> = { damage: weapon.damage, expires: this.clock + 1500 };
 
@@ -1004,16 +1346,26 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                     if (drop && !add(w.inventory, drop, 1))
                         throw new Error('Inventory full. The block was not mined.');
                     if (!foreground && w.backgroundWalls?.[key]) delete w.backgroundWalls[key]; else editTile(w, x, y, 0); analyticsTrack('block_mined', MATERIALS[m].name, drop ?? '', biome(store.world.settings, x, Math.floor(this.player.y / TILE)));
+                    if (m === 24 || m === 25) {
+                        for (const dy of [-1, 1]) {
+                            const n = readTile(w, x, y + dy);
+                            if (n === 24 || n === 25) editTile(w, x, y + dy, 0);
+                        }
+                    }
                     clearUnsupportedHarvest(w, [[x, y]]);
                     sweepUnsupportedHarvest(w, x, 1);
                     if (drop === 'stone')
                         w.progress.stone++;
-                    return `+1 ${drop ? ITEMS[drop].name : 'resource'}`;
+                    markOnboarding(w, 'mined');
+                    const discovered = drop ? noteDiscovery(w, 'item', drop) : '';
+                    return `+1 ${drop ? ITEMS[drop].name : 'resource'}${discovered ? ` · ${discovered}` : ''}`;
                 }).then(ok => {
                     if (disposed) return;
                     if (ok) {
                         sound.play('mine'); gameAudio.mine(m);
                         this.chunks.invalidate(x, y);
+                        this.chunks.invalidate(x, y - 1);
+                        this.chunks.invalidate(x, y + 1);
                         this.chunks.refreshDecor(x, y);
                         this.burst((x + .5) * TILE, (y + .5) * TILE, matProfile.color);
                     }
@@ -1033,10 +1385,12 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             const background=MATERIALS[material].isBackground;
             const occupied = isSolidMat && (Phaser.Geom.Intersects.RectangleToRectangle(rect, this.player.getBounds()) || this.foes.getChildren().some(f => Phaser.Geom.Intersects.RectangleToRectangle(rect, (f as Phaser.Physics.Arcade.Sprite).getBounds())));
             const reach = 5.5;
+            const standX = Math.floor(this.player.x / TILE);
+            const standY = Math.floor(((this.player.body as Phaser.Physics.Arcade.Body).bottom - 1) / TILE);
             const adjacent = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => {
                 const neighbor = readTile(store.world, x + dx, y + dy);
                 return solid(store.world, x + dx, y + dy) || neighbor !== 0;
-            });
+            }) || (Math.abs(x - standX) + Math.abs(y - standY) === 1) || (Math.abs(x - standX) <= 1 && y === standY + 1);
             if (this.busy || !this.inReach(x, y, reach) || (background ? !!store.world.backgroundWalls?.[`${x},${y}`] : readTile(store.world, x, y) !== 0) || occupied || protectedTile(x, y) || !adjacent) {
                 this.notify('Place beside an existing block or structure, within reach, away from actors and outpost.');
                 return;
@@ -1044,16 +1398,25 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             if (material === 30 && (![1, 9].includes(readTile(store.world, x, y + 1)) || Object.keys(store.world.crops ?? {}).length >= 128)) {
                 this.notify('Plant on soil or turf; maximum 128 growing crops.'); return;
             }
+            if (material === 24 && readTile(store.world, x, y - 1) !== 0) {
+                this.notify('Doors need two empty tiles of height.');
+                return;
+            }
             this.busy = true;
             void this.transact((_b, w) => {
                 if ((background ? !!w.backgroundWalls?.[`${x},${y}`] : readTile(w, x, y) !== 0) || !remove(w.inventory, item, 1))
                     throw new Error('Placement unavailable.');
+                if (material === 24 && readTile(w, x, y - 1) !== 0) throw new Error('Doors need two empty tiles of height.');
                 if(background) { w.backgroundWalls ??= {}; w.backgroundWalls[`${x},${y}`]=material as 18|19; } else editTile(w, x, y, material);
                 if (material === 30) { w.crops ??= {}; w.crops[`${x},${y}`] = { plantedAt: w.elapsedMs ?? 0 }; }
+                if (material === 24) editTile(w, x, y - 1, 24);
                 return `Placed ${ITEMS[item].name}`;
             }).then(ok => {
                 if (disposed) return;
-                if (ok) this.chunks.invalidate(x, y);
+                if (ok) {
+                    this.chunks.invalidate(x, y);
+                    if (material === 24) this.chunks.invalidate(x, y - 1);
+                }
                 this.busy = false;
             });
         }
@@ -1119,14 +1482,17 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         interact() {
             const w = store.world, cx = Math.floor(this.player.x / (TILE * CHUNK));
             if (w.generator >= 2) for (const site of bossSites(w.settings)) {
-                if (Math.hypot(site.x*TILE-this.player.x,(site.floor-1)*TILE-this.player.y)<85) {
+                if (Math.hypot(site.x*TILE-this.player.x,(site.floor-1)*TILE-this.player.y)<(w.settings.difficulty==='boss'?170:85)) {
                     if (w.defeated.includes(`boss:${site.id}`)) { this.notify('Shrine completed. Each regional boss grants rewards once per world.'); return; }
                     if (this.foes.getChildren().some(o=>(o as Phaser.Physics.Arcade.Sprite).getData('boss'))) return;
                     this.foes.clear(true,true); this.hostile.clear(true,true);
-                    this.createEnemy(site.id,(site.x+10)*TILE,site.floor*TILE-40,`boss:${site.id}`);
+                    const flying = site.id==='aether_warden';
+                    this.createEnemy(site.id,site.x*TILE,site.floor*TILE-(flying?7:4)*TILE,`boss:${site.id}`);
                     const boss=this.foes.getChildren().at(-1) as Phaser.Physics.Arcade.Sprite;
+                    if (!boss) return;
                     boss.setData({boss:true,state:'recover',until:this.clock+2500,cycle:0,arenaX:site.x*TILE});
-                    if(site.id==='aether_warden') (boss.body as Phaser.Physics.Arcade.Body).setAllowGravity(false);
+                    if(flying) (boss.body as Phaser.Physics.Arcade.Body).setAllowGravity(false);
+                    this.placeFoeOpen(boss, flying);
                     this.notify(`${BOSS_REGISTRY[site.id].name} awakens! Dodge the amber telegraphs; strike during recovery.`);
                     return;
                 }
@@ -1148,26 +1514,30 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                             this.busy = true;
                             void this.transact((_b, world) => {
                                 editTile(world, nx, ny, 25);
+                                if (readTile(world, nx, ny - 1) === 24) editTile(world, nx, ny - 1, 25);
+                                if (readTile(world, nx, ny + 1) === 24) editTile(world, nx, ny + 1, 25);
                                 return 'Opened timber door';
                             }).then(ok => {
                                 if (disposed) return;
-                                if (ok) this.chunks.invalidate(nx, ny);
+                                if (ok) { this.chunks.invalidate(nx, ny); this.chunks.invalidate(nx, ny - 1); this.chunks.invalidate(nx, ny + 1); }
                                 this.busy = false;
                             });
                         }
                         return;
                     }
                     if (m === 25) {
-                        const door = new Phaser.Geom.Rectangle(nx * TILE, ny * TILE, TILE, TILE);
+                        const door = new Phaser.Geom.Rectangle(nx * TILE, (ny - 1) * TILE, TILE, TILE * 2);
                         if (Phaser.Geom.Intersects.RectangleToRectangle(door, this.player.getBounds()) || this.foes.getChildren().some(f => Phaser.Geom.Intersects.RectangleToRectangle(door, (f as Phaser.Physics.Arcade.Sprite).getBounds()))) { this.notify('Doorway occupied.'); return; }
                         if (!this.busy) {
                             this.busy = true;
                             void this.transact((_b, world) => {
                                 editTile(world, nx, ny, 24);
+                                if (readTile(world, nx, ny - 1) === 25) editTile(world, nx, ny - 1, 24);
+                                if (readTile(world, nx, ny + 1) === 25) editTile(world, nx, ny + 1, 24);
                                 return 'Closed timber door';
                             }).then(ok => {
                                 if (disposed) return;
-                                if (ok) this.chunks.invalidate(nx, ny);
+                                if (ok) { this.chunks.invalidate(nx, ny); this.chunks.invalidate(nx, ny - 1); this.chunks.invalidate(nx, ny + 1); }
                                 this.busy = false;
                             });
                         }
@@ -1207,27 +1577,32 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             this.notify('Press E beside a door, crate, tree, herb, salvage pile, chest, or outpost station.');
         }
         spawn() {
-            if (this.foes.getChildren().some(o => (o as Phaser.Physics.Arcade.Sprite).getData('boss'))) return;
-            const extreme = store.world.settings.difficulty === 'extreme';
-            const cap = extreme ? 120 : store.world.settings.difficulty === 'explorer' ? 6 : 14;
+            const diff = store.world.settings.difficulty;
+            const extreme = diff === 'extreme';
+            const bossMode = diff === 'boss';
+            if (!bossMode && this.foes.getChildren().some(o => (o as Phaser.Physics.Arcade.Sprite).getData('boss'))) return;
+            const cap = extreme ? 140 : bossMode ? 4 : diff === 'explorer' ? 6 : 22;
             if (this.clock < this.spawnGraceUntil || this.foes.countActive() >= cap)
                 return;
             const w = store.world, cam = this.cameras.main.worldView;
             let spawned = 0;
-            const maxSpawn = extreme ? 28 : 3;
+            const maxSpawn = extreme ? 36 : bossMode ? 1 : diff === 'explorer' ? 2 : 6;
             const allVariantIds = Object.keys(BIOME_VARIANTS);
             for (const key of this.chunks.active.keys()) {
                 if (spawned >= maxSpawn || this.foes.countActive() >= cap) break;
                 const [cx, cy] = key.split(',').map(Number);
                 const inCave = cy > 0;
                 const slots = extreme
-                    ? (inCave ? 14 : 10)
-                    : (inCave ? 3 : 2);
+                    ? (inCave ? 16 : 12)
+                    : bossMode ? 1
+                    : diff === 'explorer' ? 1
+                    : (inCave ? 4 : 3);
                 for (let slot = 0; slot < slots; slot++) {
                     if (spawned >= maxSpawn || this.foes.countActive() >= cap) break;
                     const id = `enemy:${key}:${slot}`;
                     if (w.defeated.includes(id) || this.foes.getChildren().some(f => (f as Phaser.Physics.Arcade.Sprite).getData('id') === id))
                         continue;
+                    if (bossMode && inCave) continue;
                     const tx = cx * CHUNK + 3 + Math.floor(hash(w.settings.seed, cx, cy, `enemy-${slot}`) * 26);
                     let ty = surface(w.settings, tx) - 1;
                     if (Math.floor(ty / CHUNK) !== cy) {
@@ -1240,8 +1615,11 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                     for (let n = 0; n < 7 && !solid(w, tx, ty + 1); n++)
                         ty++;
                     const wantFly = extreme
-                        ? hash(w.settings.seed, tx, ty, `fly-${slot}`) > (inCave ? 0.28 : 0.4)
-                        : inCave && hash(w.settings.seed, tx, ty, `fly-${slot}`) > 0.55;
+                        ? hash(w.settings.seed, tx, ty, `fly-${slot}`) > (inCave ? 0.22 : 0.32)
+                        : bossMode ? hash(w.settings.seed, tx, ty, `fly-${slot}`) > 0.45
+                        : diff === 'standard'
+                            ? hash(w.settings.seed, tx, ty, `fly-${slot}`) > (inCave ? 0.4 : 0.62)
+                            : inCave && hash(w.settings.seed, tx, ty, `fly-${slot}`) > 0.55;
                     let x = (tx + .5) * TILE, y = (ty + 1) * TILE - 23;
                     if (wantFly) {
                         y = (ty + 1) * TILE - 23 - (24 + Math.floor(hash(w.settings.seed, tx, ty, `hover-${slot}`) * 90));
@@ -1249,33 +1627,52 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                             continue;
                     } else if (solid(w, tx, ty) || solid(w, tx, ty - 1) || !solid(w, tx, ty + 1))
                         continue;
-                    const baseSafe = extreme ? 220 : 580;
                     const camPad = extreme ? 40 : 100;
-                    if (Math.abs(x - 12 * TILE) < baseSafe
+                    if (inOutpost(x, y, 80)
                         || Phaser.Geom.Rectangle.Contains(Phaser.Geom.Rectangle.Clone(cam).setSize(cam.width + camPad, cam.height + camPad), x, y)
                         || Math.hypot(x - this.player.x, y - this.player.y) > (extreme ? 2200 : 1600))
                         continue;
                     const b = biome(w.settings, tx, ty);
+                    const flyShooters = ['dart_wisp', 'sky_gunner', 'razorwing', 'wisp', 'skimmer', 'drone'] as Kind[];
                     let roster: Kind[];
-                    if (extreme) {
-                        // Flood every archetype + biome variants — nearly unwinnable density
+                    if (bossMode) {
+                        roster = Object.keys(BOSS_REGISTRY) as Kind[];
+                    } else if (extreme) {
                         roster = inCave
-                            ? ['drone', 'wisp', 'skimmer', 'caster', 'bomber', 'explosion_bot', 'gunner', 'sentinel', 'crawler', 'brute', 'spitter', 'grub', 'stalker', 'thornback', 'rockmite', 'wisp', 'skimmer', 'drone', 'bomber', 'explosion_bot', 'gunner', 'caster', 'sentinel', 'hopper', ...allVariantIds]
-                            : ['crawler', 'hopper', 'bomber', 'explosion_bot', 'brute', 'stalker', 'spitter', 'grub', 'thornback', 'rockmite', 'drone', 'wisp', 'skimmer', 'gunner', 'caster', 'sentinel', 'drone', 'skimmer', 'bomber', 'explosion_bot', 'hopper', 'crawler', 'gunner', 'brute', 'stalker', ...allVariantIds];
+                            ? ['drone', 'wisp', 'skimmer', 'dart_wisp', 'sky_gunner', 'razorwing', 'caster', 'bomber', 'explosion_bot', 'gunner', 'sentinel', 'crawler', 'brute', 'spitter', 'grub', 'hopper', ...allVariantIds]
+                            : ['crawler', 'hopper', 'bomber', 'explosion_bot', 'brute', 'stalker', 'spitter', 'dart_wisp', 'sky_gunner', 'razorwing', 'drone', 'wisp', 'skimmer', 'gunner', 'caster', ...allVariantIds];
                     } else if (inCave || b === 'Crystal depths') {
-                        roster = ['caster', 'sentinel', 'drone', 'bomber', 'explosion_bot', 'gunner', 'crawler', 'grub', 'rockmite', 'spitter', 'wisp', 'skimmer'];
+                        roster = diff === 'standard'
+                            ? ['caster', 'sentinel', 'drone', 'bomber', 'gunner', 'crawler', 'spitter', 'wisp', 'skimmer', 'dart_wisp', 'sky_gunner']
+                            : ['caster', 'drone', 'crawler', 'wisp'];
                     } else if (b === 'Rust wastes') {
-                        roster = ['crawler', 'gunner', 'brute', 'rockmite', 'drone', 'bomber', 'explosion_bot', 'hopper', 'stalker', 'skimmer'];
+                        roster = diff === 'standard'
+                            ? ['crawler', 'gunner', 'brute', 'rockmite', 'drone', 'bomber', 'hopper', 'sky_gunner', 'skimmer']
+                            : ['crawler', 'gunner', 'hopper'];
                     } else {
                         const variants = allVariantIds.filter(id => BIOME_VARIANTS[id].biomeAffinity === b);
-                        roster = variants.length
-                            ? [...variants, 'explosion_bot', 'bomber', 'brute', 'stalker', 'spitter', 'thornback', 'rockmite', 'grub']
-                            : ['crawler', 'hopper', 'bomber', 'explosion_bot', 'brute', 'stalker', 'spitter', 'grub', 'thornback', 'rockmite', 'drone', 'wisp'];
+                        roster = diff === 'standard'
+                            ? (variants.length ? [...variants, 'hopper', 'stalker', 'spitter', 'dart_wisp', 'sky_gunner', 'crawler'] : ['crawler', 'hopper', 'stalker', 'spitter', 'dart_wisp', 'wisp', 'gunner'])
+                            : (variants.length ? [...variants, 'crawler', 'hopper'] : ['crawler', 'hopper', 'drone']);
                     }
-                    if (wantFly) roster = roster.filter(k => FLYING.has(k) || ENEMIES[k]?.flying || ENEMIES[k]?.baseClass === 'BaseFlyingEnemy' || (ENEMIES[k]?.baseType === 'drone'));
-                    if (!roster.length) roster = ['drone', 'wisp', 'skimmer'];
+                    if (wantFly) roster = roster.filter(k => FLYING.has(k) || ENEMIES[k]?.flying || ENEMIES[k]?.baseClass === 'BaseFlyingEnemy' || ENEMIES[k]?.baseClass === 'BaseFlyingBoss' || (ENEMIES[k]?.baseType === 'drone'));
+                    if (!roster.length) roster = flyShooters;
                     const kind = roster[Math.floor(hash(w.settings.seed, tx, ty, `roster-${slot}`) * roster.length)]!;
                     this.createEnemy(kind, x, y, id);
+                    if (bossMode) {
+                        const just = (this.foes.getChildren() as Phaser.Physics.Arcade.Sprite[]).find(f => f.getData('id') === id);
+                        if (just) {
+                            just.setData('showcase', true);
+                            just.setData('eliteDamage', 2.25);
+                            const def = BOSS_REGISTRY[kind];
+                            if (def) {
+                                just.setData('hp', Math.ceil(def.maxHp * 1.2));
+                                just.setData('maxHp', Math.ceil(def.maxHp * 1.2));
+                            }
+                            const flying = FLYING.has(kind) || !!ENEMIES[kind]?.flying || ENEMIES[kind]?.baseClass === 'BaseFlyingBoss';
+                            this.placeFoeOpen(just, flying);
+                        }
+                    }
                     // Extreme: chance to stamp an elite affix for even nastier packs
                     if (extreme && hash(w.settings.seed, tx, ty, `elite-${slot}`) > 0.72) {
                         const foes = this.foes.getChildren() as Phaser.Physics.Arcade.Sprite[];
@@ -1295,12 +1692,16 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             }
         }
         createEnemy(kind:Kind,x:number,y:number,id:string){
+            if (inOutpost(x, y, 24)) return;
+            try {
             const stats=ENEMIES[kind] || ENEMIES.sentinel;
-            const f=this.foes.create(x,y,stats.texture || kind) as Phaser.Physics.Arcade.Sprite;
+            const texKey = this.textures.exists(kind) ? kind : this.textures.exists(stats.texture) ? stats.texture : (this.textures.exists('sentinel') ? 'sentinel' : stats.texture || kind);
+            const f=this.foes.create(x,y,texKey) as Phaser.Physics.Arcade.Sprite;
+            f.setDepth(8);
             const baseType = stats.baseType || kind;
-            if (stats.scale) {
-                f.setScale(stats.scale);
-            }
+            const showcase = !!BOSS_REGISTRY[kind];
+            if (!showcase && stats.scale) f.setScale(stats.scale);
+            if (!showcase) {
             if (stats.collider) {
                 f.setSize(stats.collider.width, stats.collider.height);
                 if (stats.collider.offsetX !== undefined && stats.collider.offsetY !== undefined) {
@@ -1311,6 +1712,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             } else {
                 f.setSize(baseType==='sentinel'?32:24,baseType==='drone'?24:32);
             }
+            }
             const logicController = stats.logicController || (baseType === 'drone' ? 'HoverAndStrafe' : baseType === 'sentinel' ? 'AggressiveBoss' : 'PatrolAndAttack');
             f.setData({
                 id,
@@ -1319,36 +1721,68 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 baseType,
                 baseClass: stats.baseClass,
                 logicController,
-                attackPattern: stats.attackPattern,
+                attackPattern: stats.attackPattern || (showcase ? { type: 'ProjectileBurst', burstCount: 4, projectileColor: BOSS_REGISTRY[kind]?.phases[0]?.attacks[0]?.telegraphColor || '#ffb74d' } : undefined),
                 hp: stats.hp,
                 maxHp: stats.hp,
                 homeX: x,
                 homeY: y,
-                state: 'patrol',
+                state: showcase ? 'hunting' : 'patrol',
                 until: this.clock + 1000,
                 dir: -1,
                 memory: 0,
                 lastSeen: x,
                 stun: 0,
+                showcase,
                 nextThink: this.clock + hash(store.world.settings.seed, x, y, 'ai-phase') * 100
             });
             const body = f.body as Phaser.Physics.Arcade.Body;
             if (body) {
                 if (stats.mass) body.setMass(stats.mass);
-                if (baseType === 'drone' || stats.baseClass === 'BaseFlyingEnemy' || logicController === 'HoverAndStrafe' || FLYING.has(kind) || stats.flying) {
+                if (baseType === 'drone' || stats.baseClass === 'BaseFlyingEnemy' || stats.baseClass === 'BaseFlyingBoss' || logicController === 'HoverAndStrafe' || FLYING.has(kind) || stats.flying) {
                     body.setAllowGravity(false);
                 }
             }
+            if (showcase) {
+                this.dressBoss(f, kind, stats);
+                const flying = FLYING.has(kind) || !!stats.flying || stats.baseClass === 'BaseFlyingBoss';
+                this.placeFoeOpen(f, flying);
+            }
+            } catch { /* skip a bad spawn rather than halt the session */ }
         }
-        applyCreation(spec: CreationSpec) {
-            if(!store.aiSession) throw Error('Enter a temporary AI session first.');
+        restoreWorldCreations() {
+            for (const saved of store.world.creations ?? []) {
+                if (saved.defeated) continue;
+                const onPlayer = Math.hypot(saved.x - this.player.x, saved.y - this.player.y) < 520 || inOutpost(saved.x, saved.y, 100);
+                const at = onPlayer
+                    ? { x: this.player.x + (this.player.x >= OUTPOST_X ? 920 : -920), y: this.player.y - 40 }
+                    : { x: saved.x, y: saved.y };
+                try { this.applyCreation(saved.spec, at, false); }
+                catch { /* placement may be blocked after terrain edits; spec remains on the world */ }
+            }
+        }
+        persistCreation(id: string) {
+            const actor = this.creator?.runtime.actors.get(id);
+            if (!actor) return;
+            void this.transact((_b, w) => {
+                w.creations = [...(w.creations ?? []).filter(c => c.spec.id !== id), {
+                    spec: actor.spec, x: actor.x, y: actor.y, defeated: actor.defeated,
+                }];
+                noteDiscovery(w, 'enemy', id);
+            });
+        }
+        applyCreation(spec: CreationSpec, at?: { x: number; y: number }, persist = true) {
             this.creator ??= new CreatorRenderer(this,this.foes,()=>this.player,(p,r)=>{
                 for(let x=p.x-r;x<=p.x+r;x+=TILE/2) for(let y=p.y-r;y<=p.y+r;y+=TILE/2) {
                     const tx=Math.floor(x/TILE),ty=Math.floor(y/TILE);
-                    if(Math.abs(tx)>=WORLD_LIMIT-2||ty<1||ty>=DEPTH-2||solid(store.world,tx,ty))return false;
+                    if(Math.abs(tx)>=WORLD_LIMIT-2||ty<1||ty>=DEPTH-2||solid(store.world,tx,ty)||inOutpost(x,y,420))return false;
                 }return true;
-            },(n,x,source)=>{const before=this.health;this.damage(n,x,source);return this.health<before&&this.status==='playing';});
-            const result=this.creator.apply(spec);this.emit();return result;
+            },(n,x,source)=>{const before=this.health;this.damage(n,x,source);return this.health<before&&this.status==='playing';},
+            (p,angle)=>this.tryLightsaberDeflectPoint(p.x,p.y,angle));
+            const result=this.creator.apply(spec, at);
+            const spawned=(this.foes.getChildren() as Phaser.Physics.Arcade.Sprite[]).find(f=>f.getData('creator')===result.id);
+            if (spawned) this.placeFoeOpen(spawned, spec.movement.mode==='hover');
+            if (persist) this.persistCreation(result.id);
+            this.emit();return result;
         }
         bossAI(f: Phaser.Physics.Arcade.Sprite) {
             const id=f.getData('kind') as string, def=BOSS_REGISTRY[id];
@@ -1358,8 +1792,10 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             const state=f.getData('state');
             if(state==='windup') {
                 f.setTint(0xffc275);f.setVelocityX(0);
-                this.target.lineStyle(3,0xffc275,.8);
-                this.target.lineBetween(f.x,f.y,f.getData('aimX'),f.getData('aimY'));
+                if (store.world.settings.difficulty !== 'boss') {
+                    this.target.lineStyle(3,0xffc275,.8);
+                    this.target.lineBetween(f.x,f.y,f.getData('aimX'),f.getData('aimY'));
+                }
                 if(this.clock<until)return;
                 const cycle=f.getData('cycle') as number;
                 if(id==='rust_colossus' && cycle%2===0) {
@@ -1401,6 +1837,25 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                     f.destroy();
                     continue;
                 }
+                if (f.getData('dying')) continue;
+                if (inOutpost(f.x, f.y, 16) || this.nearBase()) {
+                    f.setData('memory', 0);
+                    const dir = f.x >= OUTPOST_X ? 1 : -1;
+                    if (inOutpost(f.x, f.y, 16)) {
+                        if (Math.abs(f.x - OUTPOST_X) < 220) f.x = OUTPOST_X + dir * 360;
+                        f.setVelocityX(dir * Math.max(p.speed, 90) * 1.5);
+                    } else f.setVelocityX(Math.sign(home - f.x) * p.speed);
+                    f.setFlipX(dir > 0);
+                    continue;
+                }
+                const flyingFoe = FLYING.has(kind) || !!p.flying || p.baseClass === 'BaseFlyingBoss' || p.baseClass === 'BaseFlyingEnemy' || logicController === 'HoverAndStrafe' || baseType === 'drone';
+                if (f.getData('showcase') || f.getData('boss') || BOSS_REGISTRY[kind]) {
+                    const box = f.body as Phaser.Physics.Arcade.Body | undefined;
+                    const hw = (box?.width ?? 28) / 2, hh = (box?.height ?? 32) / 2;
+                    const stuck = [[0, -hh + 4], [0, hh - 4], [-hw + 4, 0], [hw - 4, 0], [0, 0]].some(([dx, dy]) =>
+                        solid(store.world, Math.floor((f.x + dx) / TILE), Math.floor((f.y + dy) / TILE)));
+                    if (stuck) this.placeFoeOpen(f, flyingFoe);
+                }
                 if (f.getData('boss')) { this.bossAI(f); continue; }
                 if (this.clock < f.getData('nextThink')) continue;
                 f.setData('nextThink', this.clock + 100);
@@ -1421,6 +1876,8 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 }
                 const isSlowed = this.clock < (f.getData('slowUntil') || 0);
                 const foeSpeedMult = isSlowed ? 0.55 : 1.0;
+                const scale = (f.getData('showScale') as number) || p.scale || 1;
+                const dmg = Math.ceil(p.damage * ((f.getData('eliteDamage') as number) || 1));
                 // Explosion bot: rush the player; fuse on contact, blast still 5 tiles (player only)
                 if (kind === 'explosion_bot') {
                     if (this.nearBase()) {
@@ -1436,7 +1893,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                     const dir = Math.sign(dx) || 1;
                     f.setVelocityX(dir * p.speed * 1.35 * foeSpeedMult);
                     if ((body.blocked.left || body.blocked.right) && (body.blocked.down || body.touching.down))
-                        f.setVelocityY(-320);
+                        f.setVelocityY(-MOVEMENT.jump);
                     f.setFlipX(dir > 0);
                     f.setTint(dist <= 5 * TILE ? 0xffab40 : 0xff6b4a);
                     continue;
@@ -1454,11 +1911,11 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 if (this.clock < (f.getData('burnUntil') || 0)) f.setTint(0xff5722);
                 else if (isSlowed) f.setTint(0x40c4ff);
                 else f.clearTint();
-                f.setScale(p.scale || 1);
+                f.setScale(scale);
                 if (state === 'windup') {
                     f.setVelocityX(0);
                     f.setTint(0xffbc77);
-                    f.setScale((p.scale || 1) * 1.08, (p.scale || 1) * .93);
+                    f.setScale(scale * 1.08, scale * .93);
                     if (this.clock < until)
                         continue;
 
@@ -1488,14 +1945,14 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                         const landingX = Math.floor((f.x + direction * 85) / TILE);
                         const landingY = Math.floor(body.bottom / TILE);
                         const safeLanding = [0,1,2,3].some(dy => solid(store.world,landingX,landingY+dy) && !solid(store.world,landingX,landingY+dy-1));
-                        f.setVelocity(safeLanding ? direction * 160 : 0, -390);
+                        f.setVelocity(safeLanding ? direction * 160 : 0, -MOVEMENT.jump);
                         state = 'recover';
                         f.setData('until', this.clock + 1100);
                     }
                     else if (behavior === 'Dash' || behavior === 'charge') {
                         f.setVelocityX(direction * Math.max(240, p.speed * 2.6));
                         if (dy < -40 && (body.blocked.down || body.touching.down)) {
-                            f.setVelocityY(-360);
+                            f.setVelocityY(-MOVEMENT.jump);
                         }
                         state = 'charge';
                         f.setData('until', this.clock + 460);
@@ -1504,7 +1961,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                         f.setVelocityX(direction * Math.max(140, p.speed * 1.5));
                         f.setTint(0xff4444);
                         if (dist < 95) {
-                            this.damage(p.damage, f.x);
+                            this.damage(dmg, f.x);
                         }
                         state = 'recover';
                         f.setData('until', this.clock + (pattern?.interval ? Math.min(pattern.interval, 1200) : 900));
@@ -1527,7 +1984,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                                 if (shot) {
                                     shot.setTint(aoeColor);
                                     shot.setVelocity(Math.cos(angle) * 160, Math.sin(angle) * 160);
-                                    shot.setData({ damage: Math.round(p.damage * 0.8), expires: this.clock + 2200 });
+                                    shot.setData({ damage: Math.round(dmg * 0.8), expires: this.clock + 2200 });
                                 }
                             }
                         }
@@ -1543,7 +2000,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                             shot.setTint(projColor);
                             const v = new Phaser.Math.Vector2(dx, dy).normalize().scale(230);
                             shot.setVelocity(v.x, v.y);
-                            shot.setData({ damage: p.damage, expires: this.clock + 2400 });
+                            shot.setData({ damage: dmg, expires: this.clock + 2400 });
                         }
                         state = 'burst';
                         f.setData('remaining', burstCount - 1);
@@ -1557,7 +2014,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                             shot.setTint(projColor);
                             const v = new Phaser.Math.Vector2(dx, dy).normalize().scale(baseType === 'caster' ? 145 : 220);
                             shot.setVelocity(v.x, v.y);
-                            shot.setData({ damage: p.damage, expires: this.clock + 2400 });
+                            shot.setData({ damage: dmg, expires: this.clock + 2400 });
                         }
                         state = (baseType === 'gunner' || logicController === 'StationaryTurret') ? 'burst' : 'recover';
                         f.setData('remaining', 2);
@@ -1576,7 +2033,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                             const spread = (Math.random() - 0.5) * 0.25;
                             const v = new Phaser.Math.Vector2(dx, dy).normalize().rotate(spread).scale(230);
                             shot.setVelocity(v.x, v.y);
-                            shot.setData({ damage: p.damage, expires: this.clock + 2400 });
+                            shot.setData({ damage: dmg, expires: this.clock + 2400 });
                         }
                         const remaining = Number(f.getData('remaining')) - 1;
                         f.setData({ remaining, state: remaining > 0 ? 'burst' : 'recover', until: this.clock + (remaining > 0 ? 180 : 1300) });
@@ -1641,8 +2098,8 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 else {
                     const tx = Math.floor((f.x + direction * 24) / TILE), ty = Math.floor((body.bottom + 8) / TILE), floor = solid(store.world, tx, ty);
                     if (body.blocked.left || body.blocked.right) {
-                        if (sight && (body.blocked.down || body.touching.down) && !solid(store.world, tx, ty - 2) && solid(store.world, tx, ty - 1))
-                            f.setVelocityY(-330);
+                        if ((body.blocked.down || body.touching.down))
+                            f.setVelocityY(-MOVEMENT.jump);
                         else
                             direction = -direction;
                     }
@@ -1686,7 +2143,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             this.light.clear();
             const depth = ty - surface(store.world.settings, tx);
             if (depth > 6) {
-                const sources = [{ x: this.player.x - cam.scrollX, y: this.player.y - cam.scrollY, r: 170 }];
+                const sources = [{ x: this.player.x - cam.scrollX, y: this.player.y - cam.scrollY, r: 220 }];
                 for (let x = tx - 23; x <= tx + 23; x++)
                     for (let y = ty - 13; y <= ty + 13; y++) {
                         const material = readTile(store.world, x, y);
@@ -1695,9 +2152,9 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                     }
                 for (let x = 0; x < 960; x += 32)
                     for (let y = 0; y < 540; y += 32) {
-                        let alpha = .58;
+                        let alpha = .38;
                         for (const light of sources)
-                            alpha = Math.min(alpha, Math.max(0, Math.hypot(x + 16 - light.x, y + 16 - light.y) / light.r - .35) * .58);
+                            alpha = Math.min(alpha, Math.max(0, Math.hypot(x + 16 - light.x, y + 16 - light.y) / light.r - .45) * .38);
                         if (alpha > .02) {
                             this.light.fillStyle(0x050817, alpha);
                             this.light.fillRect(x, y, 32, 32);
@@ -1716,6 +2173,8 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             }
             if (this.status !== 'playing') {
                 this.physics.pause();
+                this.chunks.ensure(this.player.x, this.player.y);
+                this.chunks.step();
                 this.drawEnvironment();
                 return;
             }
@@ -1731,8 +2190,19 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             this.clock += delta;
             this.creator?.runtime.tick(delta);
             this.creator?.draw();
+            this.shotsVsBosses();
+            this.drawBossShowcases();
             this.simulationMs += delta;
             if (this.simulationMs >= 1000) void this.flushSimulation();
+            if (this.status === 'playing' && (store.world.hunger ?? 100) <= 0) {
+                this.health = 0;
+                this.status = 'dead';
+                this.held.clear();
+                this.physics.pause();
+                this.notify('Starved. Respawn at the beacon; all possessions are retained.');
+                this.emit();
+                return;
+            }
             const m = MOVEMENT, b = this.player.body as Phaser.Physics.Arcade.Body;
             let grounded = b.blocked.down || b.touching.down;
 
@@ -1747,12 +2217,10 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             } else if (!this.wasGrounded) {
                 const drop = this.player.y - this.fallStartY;
                 const airMs = this.clock - this.fallAirSince;
-                const extreme = store.world.settings.difficulty === 'extreme';
-                const minDrop = extreme ? 5.5 * TILE : 7.5 * TILE;
-                const minPeak = extreme ? 460 : 500;
-                if (drop > minDrop && this.fallPeak > minPeak && airMs > 260 && this.clock >= this.hurtUntil && !this.nearBase()) {
-                    // Stronger fall damage — scales with height, caps high enough to punish big drops
-                    const amount = Math.min(28, Math.max(3, Math.floor((drop - minDrop) / (TILE * 0.55)) + 3));
+                const minDrop = 3.2 * TILE;
+                const minPeak = 520;
+                if (drop > minDrop && this.fallPeak > minPeak && airMs > 280 && this.clock >= this.hurtUntil && !this.nearBase()) {
+                    const amount = Math.min(72, Math.max(12, Math.floor((drop - minDrop) / (TILE * 0.28)) + 12));
                     this.health = Math.max(0, this.health - amount);
                     this.hurtUntil = this.clock + 1400;
                     this.burst(this.player.x, this.player.y + 18, 0xffb889);
@@ -1935,28 +2403,116 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             this.player.setAlpha(hurt && Math.floor(this.clock / 80) % 2 ? .45 : 1);
             this.player.setTexture(`${store.data.profile.equipped}-${hurt ? 'hurt' : !grounded ? b.velocity.y < 0 ? 'air' : 'fall' : direction ? `run${Math.floor(this.clock / 100) % 2}` : 'idle'}`);
             // Four visual layers follow the original player pose; physics body stays unchanged.
-            this.outfit.clear().setPosition(this.player.x,this.player.y).setScale(this.facing,1).setAlpha(this.player.alpha);
+            this.outfit.clear().setPosition(this.player.x, this.player.y).setScale(this.facing, 1).setAlpha(this.player.alpha);
             const parts = store.data.profile.outfit ?? {};
-            const stride = grounded && direction ? Math.sin(this.clock/100)*3 : !grounded ? -2 : 0;
-            for (const [slot,id] of Object.entries(parts)) {
-                const part = MODULAR_WARDROBE[id!]; if (!part) continue;
-                this.outfit.fillStyle(parseHexColor(part.color));
-                if(slot==='head') { this.outfit.fillRect(-11,-22,22,15); this.outfit.fillStyle(0xd5fff1); this.outfit.fillRect(0,-17,13,4); }
-                if(slot==='torso') { this.outfit.fillRect(-10,-6,20,18); this.outfit.fillStyle(0x243744);this.outfit.fillRect(-3,-3,5,12); }
-                if(slot==='arms') { this.outfit.fillRect(-15,-5+stride,5,17); this.outfit.fillRect(10,-5-stride,5,17); }
-                if(slot==='legs') { this.outfit.fillRect(-9,12,7,10+stride); this.outfit.fillRect(3,12,7,10-stride); }
+            const stride = grounded && direction ? Math.sin(this.clock / 100) * 3 : !grounded ? -2 : 0;
+            for (const slot of ['legs', 'torso', 'arms', 'head'] as const) {
+                const part = MODULAR_WARDROBE[parts[slot] ?? ''];
+                if (!part) continue;
+                const c = parseHexColor(part.color);
+                const dark = shadeRgb(c, 0.62);
+                const light = shadeRgb(c, 1.25);
+                const set = part.setName;
+                if (slot === 'legs') {
+                    this.outfit.fillStyle(c);
+                    this.outfit.fillRect(-9, 12, 7, 10 + stride);
+                    this.outfit.fillRect(3, 12, 7, 10 - stride);
+                    this.outfit.fillStyle(dark);
+                    this.outfit.fillRect(-10, 20 + stride, 9, 4);
+                    this.outfit.fillRect(2, 20 - stride, 9, 4);
+                    if (set === 'Void Knight') {
+                        this.outfit.fillStyle(light);
+                        this.outfit.fillTriangle(-10, 12, -2, 12, -6, 8);
+                        this.outfit.fillTriangle(2, 12, 10, 12, 6, 8);
+                    }
+                    if (set === 'Neon Technician') {
+                        this.outfit.fillStyle(0x7fdfff);
+                        this.outfit.fillRect(-8, 16 + stride, 2, 6);
+                        this.outfit.fillRect(6, 16 - stride, 2, 6);
+                    }
+                }
+                if (slot === 'torso') {
+                    if (set === 'Salvage Ranger' || set === 'Void Knight') {
+                        this.outfit.fillStyle(dark);
+                        this.outfit.fillTriangle(-16, -4, 0, 18, -18, 22);
+                    }
+                    this.outfit.fillStyle(hurt ? 0xffffff : c);
+                    this.outfit.fillRect(-10, -6, 20, 18);
+                    this.outfit.fillStyle(0x243744);
+                    this.outfit.fillRect(-3, -3, 5, 12);
+                    this.outfit.fillStyle(light);
+                    if (set === 'Frontier Pioneer') this.outfit.fillRect(4, 2, 5, 4);
+                    if (set === 'Neon Technician') {
+                        this.outfit.fillStyle(0x7fdfff);
+                        this.outfit.fillRect(-1, -4, 2, 14);
+                        this.outfit.fillRect(-8, 4, 16, 1);
+                    }
+                }
+                if (slot === 'arms') {
+                    this.outfit.fillStyle(c);
+                    this.outfit.fillRect(-15, -5 + stride, 5, 17);
+                    this.outfit.fillRect(10, -5 - stride, 5, 17);
+                    this.outfit.fillStyle(dark);
+                    this.outfit.fillRect(-16, 8 + stride, 6, 4);
+                    this.outfit.fillRect(10, 8 - stride, 6, 4);
+                    if (set === 'Void Knight') {
+                        this.outfit.fillStyle(light);
+                        this.outfit.fillTriangle(-16, -5 + stride, -10, -5 + stride, -13, -10 + stride);
+                    }
+                    if (set === 'Neon Technician') {
+                        this.outfit.fillStyle(0x7fdfff);
+                        this.outfit.fillRect(-15, 2 + stride, 5, 1);
+                        this.outfit.fillRect(10, 2 - stride, 5, 1);
+                    }
+                }
+                if (slot === 'head') {
+                    this.outfit.fillStyle(c);
+                    this.outfit.fillRect(-11, -22, 22, 15);
+                    this.outfit.fillStyle(0xd5fff1);
+                    this.outfit.fillRect(0, -17, 13, 4);
+                    if (set === 'Salvage Ranger') {
+                        this.outfit.fillStyle(dark);
+                        this.outfit.fillRect(-16, -20, 32, 4);
+                        this.outfit.fillStyle(c);
+                        this.outfit.fillRect(-8, -26, 16, 6);
+                    }
+                    if (set === 'Void Knight') {
+                        this.outfit.fillStyle(light);
+                        this.outfit.fillTriangle(-10, -22, -4, -22, -8, -32);
+                        this.outfit.fillTriangle(4, -22, 10, -22, 8, -32);
+                    }
+                    if (set === 'Neon Technician') {
+                        this.outfit.fillStyle(0x7fdfff);
+                        this.outfit.fillRect(-9, -32, 2, 10);
+                        this.outfit.fillRect(7, -32, 2, 10);
+                    }
+                    if (set === 'Frontier Pioneer') {
+                        this.outfit.fillStyle(dark);
+                        this.outfit.fillRect(-11, -14, 22, 3);
+                    }
+                }
             }
             const item = store.world.inventory[this.selected]?.id;
-            const isMeleeWeapon = ['sword', 'sword_long', 'spear', 'hammer_heavy'].includes(item ?? '');
+            const isMeleeWeapon = ['sword', 'sword_long', 'spear', 'hammer_heavy', 'lightsaber'].includes(item ?? '');
             const isMagicWeapon = ['staff', 'staff_ember', 'wand_frost', 'staff_arc', 'tome_crystal'].includes(item ?? '');
             const isTool = !!getToolProfile(item ?? '');
-            // Held item = same drawn icon as hotbar/inventory, fixed frame size
-            const heldTex = item && this.textures.exists(`icon-${item}`) ? `icon-${item}` : null;
+            const gunFamily = GUN_FAMILIES.find(id => id === item);
+            const gunSkinId = gunFamily ? store.data.profile.guns?.[gunFamily] : undefined;
+            const heldGunKey = gunFamily ? heldGunTextureKey(item!, gunSkinId) : null;
+            const heldKey = item
+                ? gunFamily
+                    ? heldGunKey
+                    : `icon-${item}`
+                : null;
+            const heldTex = (heldKey && this.textures.exists(heldKey) ? heldKey : null)
+                || (heldGunKey && this.textures.exists(heldGunKey) ? heldGunKey : null)
+                || (gunFamily && this.textures.exists('gun-tool') ? 'gun-tool' : null)
+                || (item && this.textures.exists(`icon-${item}`) ? `icon-${item}` : null);
             const aimHeld = isMeleeWeapon || isMagicWeapon || !!WEAPONS[item!] || isTool;
             if (heldTex) {
                 this.weapon.setTexture(heldTex).setVisible(true).clearTint();
-                this.weapon.setOrigin(aimHeld ? 0.35 : 0.5, aimHeld ? 0.55 : 0.7);
-                this.weapon.setScale(1); // all icons share HELD_ICON_SIZE
+                this.weapon.setOrigin(gunFamily ? 0.18 : aimHeld ? 0.35 : 0.5, gunFamily ? 0.55 : aimHeld ? 0.55 : 0.7);
+                this.weapon.setScale(1);
             } else {
                 this.weapon.setVisible(false).setScale(1);
             }
@@ -1968,8 +2524,13 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             const handX = this.player.x + (aimHeld ? aimSide : this.facing) * (aimHeld ? 14 : 12);
             const handY = this.player.y + (aimHeld ? 4 + Math.sin(angle) * 2 : 10);
             this.weapon.setPosition(handX, handY);
-            if (aimHeld) {
-                // Pitch-only rotation + flipX keeps guns/tools upright when facing left (no upside-down)
+            if (gunFamily) {
+                this.weapon
+                    .setScale(1, 1)
+                    .setFlipX(false)
+                    .setFlipY(aimSide < 0)
+                    .setRotation(angle);
+            } else if (aimHeld) {
                 const pitch = Math.atan2(Math.sin(angle), Math.abs(Math.cos(angle)) || 0.001);
                 this.weapon
                     .setScale(1, 1)
@@ -1977,7 +2538,6 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                     .setFlipX(aimSide < 0)
                     .setRotation(pitch);
             } else {
-                // Blocks stay upright cube icons — never mirror/flip
                 this.weapon
                     .setScale(1, 1)
                     .setFlipY(false)
@@ -1986,10 +2546,43 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             }
             const { x, y } = this.targetTile();
             this.target.clear();
-            if(store.world.generator>=2) for(const site of bossSites(store.world.settings)) {
-                if(Math.abs(site.x*TILE-this.player.x)<700 && Math.abs(site.floor*TILE-this.player.y)<400) {
-                    this.target.lineStyle(3,0xc6adf4,.8);this.target.strokeTriangle(site.x*TILE-16,site.floor*TILE-5,site.x*TILE,site.floor*TILE-60,site.x*TILE+16,site.floor*TILE-5);
-                    if(!(store.world.discoveredBosses??[]).includes(site.id)) void this.transact((_b,w)=>{w.discoveredBosses??=[];if(!w.discoveredBosses.includes(site.id))w.discoveredBosses.push(site.id);return `Discovered ${BOSS_REGISTRY[site.id].name}: press E at the shrine when ready.`;});
+            if(store.world.generator>=2) {
+                const bossMode = store.world.settings.difficulty === 'boss';
+                const rangeX = bossMode ? 3600 : 900;
+                const rangeY = bossMode ? 2000 : 520;
+                for(const site of bossSites(store.world.settings)) {
+                    const sx = site.x * TILE, sy = site.floor * TILE;
+                    const dx = sx - this.player.x, dy = sy - this.player.y;
+                    const near = Math.abs(dx) < rangeX && Math.abs(dy) < rangeY;
+                    if (bossMode || near) {
+                        const h = bossMode ? 210 : 64;
+                        this.target.fillStyle(0xc6adf4, bossMode ? 0.32 : 0.55);
+                        this.target.fillRect(sx - (bossMode ? 7 : 4), sy - h, bossMode ? 14 : 8, h);
+                        this.target.fillStyle(0xf8e6ff, 0.95);
+                        this.target.fillCircle(sx, sy - h - 8, bossMode ? 12 : 6);
+                        this.target.lineStyle(3, 0xe08db4, 0.95);
+                        this.target.strokeTriangle(sx - 18, sy - 5, sx, sy - Math.min(88, h * 0.45), sx + 18, sy - 5);
+                    }
+                    if (near && !(store.world.discoveredBosses ?? []).includes(site.id)) {
+                        void this.transact((_b, w) => {
+                            w.discoveredBosses ??= [];
+                            if (!w.discoveredBosses.includes(site.id)) w.discoveredBosses.push(site.id);
+                            return `Discovered ${BOSS_REGISTRY[site.id].name}: press E at the shrine when ready.`;
+                        });
+                    }
+                }
+                if (bossMode) {
+                    const next = bossSites(store.world.settings)
+                        .filter(s => !store.world.defeated.includes(`boss:${s.id}`))
+                        .map(s => ({ s, d: Math.hypot(s.x * TILE - this.player.x, s.floor * TILE - this.player.y) }))
+                        .sort((a, b) => a.d - b.d)[0];
+                    if (next && next.d > 90) {
+                        const dx = next.s.x * TILE - this.player.x, dy = next.s.floor * TILE - this.player.y, dist = next.d || 1;
+                        const ax = this.player.x + dx / dist * 110, ay = this.player.y + dy / dist * 110 - 36;
+                        const px = -dy / dist, py = dx / dist;
+                        this.target.fillStyle(0xffe08a, 0.95);
+                        this.target.fillTriangle(ax + dx / dist * 18, ay + dy / dist * 18, ax + px * 11, ay + py * 11, ax - px * 11, ay - py * 11);
+                    }
                 }
             }
             const isBuilding = item && BUILDING[item] !== undefined;
@@ -2045,6 +2638,10 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             }
             if (this.clock - this.lastMagic > 1800)
                 this.mana = Math.min(stats.maxMana, this.mana + delta * .018);
+            if (store.world.inventory[this.selected]?.id === 'lightsaber') {
+                for (const obj of [...this.hostile.getChildren()])
+                    this.reflectLightsaberShot(obj as Phaser.Physics.Arcade.Sprite);
+            }
             for (const group of [this.shots, this.hostile])
                 for (const s of group.getChildren())
                     if (this.clock > (s as Phaser.Physics.Arcade.Sprite).getData('expires'))
@@ -2054,7 +2651,9 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 this.wildlife.update(this.clock, this.player);
                 this.lastAi = this.clock;
             }
-            if (this.clock - this.lastSpawn > (store.world.settings.difficulty === 'extreme' ? 90 : 600)) {
+            const d = store.world.settings.difficulty;
+            const spawnMs = d === 'extreme' ? 70 : d === 'standard' ? 320 : d === 'boss' ? 5200 : 800;
+            if (this.clock - this.lastSpawn > spawnMs) {
                 this.spawn();
                 this.lastSpawn = this.clock;
             }
@@ -2081,12 +2680,24 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         }
     }
     const game = new Phaser.Game({ type: Phaser.AUTO, parent: host, width: 960, height: 540, pixelArt: true, roundPixels: true, banner: false, audio: { noAudio: true }, physics: { default: 'arcade', arcade: { gravity: { x: 0, y: MOVEMENT.gravity }, fps: 120 } }, scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH }, scene: [WorldScene] });
+    const refreshScale = () => { try { game.scale.refresh(); } catch { /* parent may be unmounting */ } };
+    const onFullscreen = () => refreshScale();
+    requestAnimationFrame(refreshScale);
+    window.addEventListener('resize', refreshScale);
+    document.addEventListener('fullscreenchange', onFullscreen);
     host.tabIndex = 0;
     const save = () => scene?.save() ?? Promise.resolve();
-    const keydown = (e: KeyboardEvent) => { if (document.activeElement !== host || !scene)
-        return; if (['Space', 'ArrowLeft', 'ArrowRight', 'KeyA', 'KeyD', 'KeyJ', 'KeyE', 'KeyF', 'KeyH', 'Escape', 'KeyR', 'KeyI', 'KeyC', 'KeyM', 'KeyQ'].includes(e.code) || /^Digit[1-8]$/.test(e.code))
-        e.preventDefault(); if (e.repeat)
-        return; if (/^Digit[1-8]$/.test(e.code)) {
+    const keydown = (e: KeyboardEvent) => {
+        if (!scene) return;
+        if (e.code === 'KeyR' && scene.status === 'dead') {
+            e.preventDefault();
+            scene.respawn();
+            return;
+        }
+        if (document.activeElement !== host) return;
+        if (['Space', 'ArrowLeft', 'ArrowRight', 'KeyA', 'KeyD', 'KeyJ', 'KeyE', 'KeyF', 'KeyH', 'Escape', 'KeyR', 'KeyI', 'KeyC', 'KeyM', 'KeyQ'].includes(e.code) || /^Digit[1-8]$/.test(e.code))
+            e.preventDefault();
+        if (e.repeat) return; if (/^Digit[1-8]$/.test(e.code)) {
         scene.selected = Number(e.code.slice(-1)) - 1;
         scene.emit();
         return;
@@ -2107,8 +2718,6 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         }
         return;
     } if (['KeyI', 'KeyC', 'KeyM'].includes(e.code)) {
-        scene.pause();
-        onMenu(e.code === 'KeyI' ? 'inventory' : e.code === 'KeyC' ? 'crafting' : 'map');
         return;
     } if (['KeyA', 'KeyD', 'ArrowLeft', 'ArrowRight'].includes(e.code))
         scene.cursor.known = false; scene.held.add(e.code); scene.fresh.add(e.code); };
@@ -2139,9 +2748,15 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         } }, recall: () => { host.focus(); scene?.resume(); scene?.recall(); }, respawn: () => { host.focus(); scene?.respawn(); }, save, setVolume: n => { sound.setVolume(n); gameAudio.setVolume(n); }, feedback: () => { sound.unlock();sound.play('reward'); }, setShake: b => { if (scene)
             scene.shake = b; }, setHealth: n => { scene?.setHealth(n); }, setMana: n => { scene?.setMana(n); }, setHunger: n => { scene?.setHunger(n); },
         capturePlayer: () => scene ? {health:scene.health,mana:scene.mana,effects:structuredClone(scene.activeEffects),shieldBudget:scene.shieldBudget} : undefined,
-        applyCreation: spec => { if(!scene)throw Error('Game is not ready');return scene.applyCreation(spec); },
-        removeCreation: id => { scene?.creator?.runtime.remove(id);scene?.creator?.draw();scene?.emit(); },
-        resetCreations: () => { scene?.creator?.runtime.reset();scene?.creator?.draw();scene?.emit(); },
+        applyCreation: (spec, at) => { if(!scene)throw Error('Game is not ready');return scene.applyCreation(spec, at); },
+        removeCreation: id => {
+            scene?.creator?.runtime.remove(id);scene?.creator?.draw();scene?.emit();
+            void store.transact((_b,w)=>{ w.creations = (w.creations ?? []).filter(c => c.spec.id !== id); });
+        },
+        resetCreations: () => {
+            scene?.creator?.runtime.reset();scene?.creator?.draw();scene?.emit();
+            void store.transact((_b,w)=>{ w.creations = []; });
+        },
             castBlink: () => { host.focus(); scene?.castBlink(); }, castShield: () => { host.focus(); scene?.castShield(); },
-            destroy: () => { disposed = true; scene?.creator?.destroy(); sound.close(); window.removeEventListener('keydown', keydown); window.removeEventListener('keyup', keyup); window.removeEventListener('pointerup', up); window.removeEventListener('blur', blur); document.removeEventListener('visibilitychange', hidden); host.removeEventListener('pointermove', move); host.removeEventListener('pointerdown', down); host.removeEventListener('contextmenu', context); host.removeEventListener('blur', blur); game.destroy(true); } };
+            destroy: () => { disposed = true; scene?.creator?.destroy(); sound.close(); window.removeEventListener('resize', refreshScale); document.removeEventListener('fullscreenchange', onFullscreen); window.removeEventListener('keydown', keydown); window.removeEventListener('keyup', keyup); window.removeEventListener('pointerup', up); window.removeEventListener('blur', blur); document.removeEventListener('visibilitychange', hidden); host.removeEventListener('pointermove', move); host.removeEventListener('pointerdown', down); host.removeEventListener('contextmenu', context); host.removeEventListener('blur', blur); game.destroy(true); } };
 }

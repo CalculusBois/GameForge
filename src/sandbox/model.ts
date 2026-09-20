@@ -1,4 +1,5 @@
 import { OBJECTIVE_REWARDS, CHEST_REWARD } from './registry/economy';
+import type { WorldCreation } from '../creator/spec';
 import {
   ITEMS,
   type ItemDefinition,
@@ -87,7 +88,7 @@ export type Material =
 
 export interface WorldSettings {
   seed: string;
-  difficulty: 'explorer' | 'standard' | 'extreme';
+  difficulty: 'explorer' | 'standard' | 'extreme' | 'boss';
   roughness: number;
   caves: number;
   abundance: number;
@@ -107,7 +108,7 @@ export function validateSettings(s: WorldSettings) {
     typeof s.seed !== 'string' ||
     !s.seed.trim() ||
     s.seed.length > 80 ||
-    !['explorer', 'standard', 'extreme'].includes(s.difficulty) ||
+    !['explorer', 'standard', 'extreme', 'boss'].includes(s.difficulty) ||
     ![s.roughness, s.caves, s.abundance].every(
       (v) => Number.isFinite(v) && v >= 0.6 && v <= 1.4
     )
@@ -232,6 +233,10 @@ export interface WorldSave {
   meal?: { type: string; magnitude: number; remainingMs: number; name: string };
   pinnedRecipe?: string;
   discoveredBosses?: string[];
+  discoveredItems?: string[];
+  discoveredEnemies?: string[];
+  onboarding?: { mined: boolean; smelted: boolean; cooked: boolean; equipped: boolean };
+  creations?: WorldCreation[];
   backgroundWalls?: Record<string, 18 | 19>;
   crops?: Record<string, { plantedAt: number }>;
 }
@@ -255,6 +260,7 @@ export function newWorld(id: string, settings: WorldSettings): WorldSave {
   const inventory: Inventory = Array.from({ length: 32 }, () => null);
   inventory[0] = { id: 'pickaxe', count: 1 };
   inventory[1] = { id: 'blaster', count: 1 };
+  inventory[2] = { id: 'ammo', count: 64 };
   inventory[4] = { id: 'dirt', count: 20 };
   return {
     id,
@@ -279,6 +285,8 @@ export function newWorld(id: string, settings: WorldSettings): WorldSave {
     upgrades: { vitalityCores: 0, manaCores: 0 },
     hunger: 100,
     crops: {},
+    discoveredItems: ['pickaxe', 'blaster', 'ammo', 'dirt'],
+    onboarding: { mined: false, smelted: false, cooked: false, equipped: false },
   };
 }
 
@@ -295,6 +303,11 @@ export function initialBundle(): Bundle {
 export function craft(w: WorldSave, id: string, atBase: boolean) {
   const r = RECIPES.find((r) => r.id === id) || RECIPES.find((r) => r.output.id === id);
   if (!r || !atBase) throw new Error('Return to the outpost workbench or forge.');
+  const isSmeltRecipe = r.id === 'bar' || r.id.startsWith('smelt_');
+  if (isSmeltRecipe && !ownsStation(w, 'station_furnace', 33))
+    throw new Error('Buy a Stone furnace from the shop (or craft one) and place it to smelt ingots.');
+  if (r.station === 'Cooking' && !ownsStation(w, 'station_cooking', 34))
+    throw new Error('Craft a Cooking station to unlock cooking recipes.');
   if (r.id === 'bar') return smelt(w, 'iron', count(w.inventory, 'coal') ? 'coal' : 'wood', 1, atBase);
   const inv = structuredClone(w.inventory);
   for (const [key, n] of Object.entries(r.ingredients)) {
@@ -309,7 +322,18 @@ export function craft(w: WorldSave, id: string, atBase: boolean) {
   if (['weapon', 'tool'].includes(ITEMS[r.output.id].category)) {
     w.progress.craft++;
   }
-  return `Crafted ${r.output.count} ${ITEMS[r.output.id].name}`;
+  const discovered = noteDiscovery(w, 'item', r.output.id);
+  return `Crafted ${r.output.count} ${ITEMS[r.output.id].name}${discovered ? ` · ${discovered}` : ''}`;
+}
+
+export function ownsStation(w: WorldSave, item: ItemId, mat: number) {
+  if (count(w.inventory, item) > 0) return true;
+  for (const chunk of Object.values(w.edits ?? {})) {
+    for (const t of Object.values(chunk)) {
+      if (t === mat) return true;
+    }
+  }
+  return false;
 }
 
 export function smelt(
@@ -320,6 +344,8 @@ export function smelt(
   atBase: boolean
 ): string {
   if (!atBase) throw new Error('Return to the outpost forge to smelt ores.');
+  if (!ownsStation(w, 'station_furnace', 33))
+    throw new Error('Buy a Stone furnace from the shop, then place it to smelt ingots.');
   if (!Number.isInteger(barCount) || barCount < 1)
     throw new Error('Choose a valid quantity of bars to smelt.');
 
@@ -330,28 +356,45 @@ export function smelt(
   if (!fuel) throw new Error('Choose coal or timber as smelting fuel.');
 
   const oreNeeded = recipe.oreCount * barCount;
-  const fuelNeeded = Math.ceil(barCount / fuel.smeltsPerUnit);
+  const burnMs = fuel.burnDurationSeconds * 1000;
+  const neededMs = (barCount / fuel.smeltsPerUnit) * burnMs;
+  const leftoverMs = w.furnace && w.furnace.fuel === fuelId && w.furnace.remaining === 0
+    ? w.furnace.fuelMs
+    : 0;
+  const extraMs = Math.max(0, neededMs - leftoverMs);
+  const fuelNeeded = extraMs > 0 ? Math.ceil(extraMs / burnMs) : 0;
 
   if (count(w.inventory, oreId) < oreNeeded) {
     throw new Error(`Need ${oreNeeded} ${ITEMS[oreId].name} (have ${count(w.inventory, oreId)}).`);
   }
-  if (count(w.inventory, fuelId) < fuelNeeded) {
+  if (fuelNeeded > 0 && count(w.inventory, fuelId) < fuelNeeded) {
     throw new Error(`Need ${fuelNeeded} ${ITEMS[fuelId].name} for fuel (have ${count(w.inventory, fuelId)}).`);
   }
+
+  if (w.furnace && w.furnace.remaining > 0)
+    throw new Error('The furnace is still smelting. Wait or collect finished bars first.');
+  if (w.furnace && w.furnace.stored > 0 && w.furnace.output !== recipe.outputBarId)
+    throw new Error('Collect the previous furnace batch first.');
+  if (barCount + (w.furnace?.remaining ?? 0) > 99) throw new Error('Furnace queue is limited to 99 bars.');
 
   const inv = structuredClone(w.inventory);
   if (!remove(inv, oreId, oreNeeded)) {
     throw new Error('Not enough ore.');
   }
-  if (!remove(inv, fuelId, fuelNeeded)) {
+  if (fuelNeeded > 0 && !remove(inv, fuelId, fuelNeeded)) {
     throw new Error('Not enough fuel.');
   }
-  if (w.furnace && (w.furnace.remaining > 0 || w.furnace.stored > 0))
-    throw new Error('Collect the previous furnace batch first.');
-  if (barCount > 99) throw new Error('Furnace queue is limited to 99 bars.');
   w.inventory = inv;
-  w.furnace = { ore: oreId, fuel: fuelId, output: recipe.outputBarId, remaining: barCount,
-    progressMs: 0, fuelMs: fuelNeeded * fuel.burnDurationSeconds * 1000, stored: 0 };
+  const stored = w.furnace?.output === recipe.outputBarId ? (w.furnace.stored ?? 0) : 0;
+  w.furnace = {
+    ore: oreId,
+    fuel: fuelId,
+    output: recipe.outputBarId,
+    remaining: barCount,
+    progressMs: 0,
+    fuelMs: leftoverMs + fuelNeeded * burnMs,
+    stored,
+  };
   return `Queued ${barCount} ${ITEMS[recipe.outputBarId].name} using ${fuelNeeded} ${fuel.name}`;
 }
 
@@ -379,13 +422,13 @@ export function claim(w: WorldSave, id: ObjectiveId) {
 export function chest(w: WorldSave, id: string) {
   if (w.opened.includes(id)) throw new Error('This chest is already empty.');
   const inv = structuredClone(w.inventory);
-  if (!add(inv, 'crystal', 4) || !add(inv, 'iron', 4))
+  if (!add(inv, 'crystal', 4) || !add(inv, 'iron', 4) || !add(inv, 'ammo', 24))
     throw new Error('Make room for the chest contents first.');
   w.inventory = inv;
   w.opened.push(id);
   w.coins += CHEST_REWARD;
   w.progress.chest++;
-  return `+${CHEST_REWARD} coins · 4 crystal shards · 4 iron ore`;
+  return `+${CHEST_REWARD} coins · 4 crystal shards · 4 iron ore · 24 ammo`;
 }
 
 export interface MaterialProfile {
@@ -503,6 +546,33 @@ export function useManaCore(w: WorldSave): string {
   return `Mana Core consumed! Max Mana increased to ${100 + w.upgrades.manaCores * 10} (${w.upgrades.manaCores}/10).`;
 }
 
+export type OnboardingKey = 'mined' | 'smelted' | 'cooked' | 'equipped';
+export function markOnboarding(w: WorldSave, key: OnboardingKey) {
+  w.onboarding ??= { mined: false, smelted: false, cooked: false, equipped: false };
+  w.onboarding[key] = true;
+}
+export function noteDiscovery(w: WorldSave, kind: 'item' | 'enemy', id: string) {
+  const list = kind === 'item' ? (w.discoveredItems ??= []) : (w.discoveredEnemies ??= []);
+  if (list.includes(id)) return '';
+  list.push(id);
+  if (kind !== 'item') return '';
+  const unlocked = RECIPES.filter(r => Object.prototype.hasOwnProperty.call(r.ingredients, id)).slice(0, 3);
+  if (!unlocked.length) return '';
+  return `New recipes: ${unlocked.map(r => r.name).join(', ')}`;
+}
+export function placedTiles(w: WorldSave, material: number) {
+  const out: { x: number; y: number }[] = [];
+  for (const [chunkKey, chunk] of Object.entries(w.edits)) {
+    const [cx, cy] = chunkKey.split(',').map(Number);
+    for (const [pos, m] of Object.entries(chunk)) {
+      if (m !== material) continue;
+      const [lx, ly] = pos.split(',').map(Number);
+      out.push({ x: cx * CHUNK + lx, y: cy * CHUNK + ly });
+    }
+  }
+  return out;
+}
+
 export function equipItem(w: WorldSave, slot: EquipmentSlot, itemId: ItemId): string {
   w.equipment ??= { head: null, chest: null, legs: null, accessory1: null, accessory2: null };
   const itemDef = ITEMS[itemId];
@@ -532,6 +602,8 @@ export function equipItem(w: WorldSave, slot: EquipmentSlot, itemId: ItemId): st
     }
   }
   w.equipment[slot] = itemId;
+  markOnboarding(w, 'equipped');
+  noteDiscovery(w, 'item', itemId);
   return `Equipped ${itemDef.name}`;
 }
 
@@ -557,6 +629,16 @@ export interface DerivedStats {
   knockbackResistance: number;
 }
 
+const EQUIPMENT_BONUS: Partial<Record<ItemId, { defense?: number; maxMana?: number; speed?: number; mine?: number; knockback?: number }>> = {
+  helmet_iron: { defense: 4 },
+  chest_iron: { defense: 8 },
+  boots_iron: { defense: 4 },
+  charm_mining: { mine: 0.25 },
+  boots_speed: { speed: 0.2 },
+  charm_mana: { maxMana: 30 },
+  charm_knockback: { knockback: 0.5 },
+};
+
 export function derivePlayerStats(w: WorldSave, activeEffects: { type: string }[] = []): DerivedStats {
   const vitalityCount = w.upgrades?.vitalityCores ?? 0;
   const manaCount = w.upgrades?.manaCores ?? 0;
@@ -571,13 +653,13 @@ export function derivePlayerStats(w: WorldSave, activeEffects: { type: string }[
   const equippedItems = [eq.head, eq.chest, eq.legs, eq.accessory1, eq.accessory2].filter(Boolean) as ItemId[];
 
   for (const item of equippedItems) {
-    if (item === 'helmet_iron') defense += 4;
-    else if (item === 'chest_iron') defense += 8;
-    else if (item === 'boots_iron') defense += 4;
-    else if (item === 'charm_mining') mineSpeedMultiplier += 0.25;
-    else if (item === 'boots_speed') speedMultiplier += 0.20;
-    else if (item === 'charm_mana') maxMana += 30;
-    else if (item === 'charm_knockback') knockbackResistance += 0.50;
+    const bonus = EQUIPMENT_BONUS[item];
+    if (!bonus) continue;
+    defense += bonus.defense ?? 0;
+    maxMana += bonus.maxMana ?? 0;
+    speedMultiplier += bonus.speed ?? 0;
+    mineSpeedMultiplier += bonus.mine ?? 0;
+    knockbackResistance += bonus.knockback ?? 0;
   }
 
   if (w.meal && w.meal.remainingMs > 0) {
@@ -626,6 +708,8 @@ export function eatFood(
 
 export function cookDish(w: WorldSave, recipeId: string, atStation = false): string {
   if (!atStation) throw new Error('Return to the outpost cooking station.');
+  if (!ownsStation(w, 'station_cooking', 34))
+    throw new Error('Craft a Cooking station first to unlock cooking recipes.');
   const recipe = COOKING_RECIPES.find(r => r.id === recipeId);
   if (!recipe) {
     throw new Error(`Unknown cooking recipe: ${recipeId}`);
@@ -652,7 +736,33 @@ export function cookDish(w: WorldSave, recipeId: string, atStation = false): str
     }
     throw new Error('Inventory full. Cannot receive prepared dish.');
   }
-  return `Prepared ${recipe.output.count}x ${recipe.name}!`;
+  markOnboarding(w, 'cooked');
+  const discovered = noteDiscovery(w, 'item', recipe.output.id);
+  return `Prepared ${recipe.output.count}x ${recipe.name}!${discovered ? ` · ${discovered}` : ''}`;
+}
+
+export function compareItem(w: WorldSave, id: ItemId): string {
+  const item = ITEMS[id];
+  const lines = [`${item.name} — ${item.description}`];
+  const weapon = WEAPONS[id];
+  if (weapon) {
+    const equippedId = w.inventory.slice(0, 8).find(s => s && WEAPONS[s.id] && s.id !== id)?.id;
+    const other = equippedId ? WEAPONS[equippedId] : undefined;
+    lines.push(`Damage ${weapon.damage}${other ? ` (${weapon.damage - other.damage >= 0 ? '+' : ''}${weapon.damage - other.damage} vs ${ITEMS[equippedId!].name})` : ''}`);
+    lines.push(`Cooldown ${weapon.cooldown}ms${other ? ` (${weapon.cooldown - other.cooldown >= 0 ? '+' : ''}${weapon.cooldown - other.cooldown}ms)` : ''}`);
+  }
+  const bonus = EQUIPMENT_BONUS[id];
+  if (bonus) {
+    const slot = id.startsWith('helmet_') ? 'head' : id.startsWith('chest_') ? 'chest' : id.startsWith('boots_iron') ? 'legs' : id.startsWith('boots_') ? 'legs' : 'accessory1';
+    const worn = w.equipment?.[slot as EquipmentSlot];
+    const wornBonus = worn ? EQUIPMENT_BONUS[worn] : undefined;
+    if (bonus.defense) lines.push(`Defense +${bonus.defense}${worn && worn !== id ? ` vs equipped ${wornBonus?.defense ?? 0}` : worn === id ? ' (equipped)' : ''}`);
+    if (bonus.maxMana) lines.push(`Max mana +${bonus.maxMana}`);
+    if (bonus.speed) lines.push(`Move speed +${Math.round(bonus.speed * 100)}%`);
+    if (bonus.mine) lines.push(`Mine speed +${Math.round(bonus.mine * 100)}%`);
+    if (bonus.knockback) lines.push(`Knockback resist ${Math.round(bonus.knockback * 100)}%`);
+  }
+  return lines.join('\n');
 }
 
 export { STATUS_EFFECTS, createStatusEffect, tickStatusEffects, type ActiveStatusEffect, type StatusEffectType } from './registry/statusEffects';

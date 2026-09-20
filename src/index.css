@@ -5,6 +5,12 @@
     font-synthesis: none;
     color-scheme: dark;
 }
+html, body, #root {
+    min-height: 100%;
+}
+body > canvas {
+    display: none !important;
+}
 * {
     box-sizing: border-box;
 }
@@ -174,15 +180,20 @@ select:focus-visible {
     z-index: 1;
     aspect-ratio: 16/9;
     width: 100%;
+    min-height: 280px;
     background: #090f20;
 }
 .game-host {
     position: absolute;
     inset: 0;
+    width: 100%;
+    height: 100%;
     outline: none;
 }
 .game-host canvas {
     display: block !important;
+    width: 100% !important;
+    height: 100% !important;
     image-rendering: pixelated;
 }
 .overlay {
@@ -190,7 +201,7 @@ select:focus-visible {
     inset: 0;
     display: grid;
     place-items: center;
-    background: #060d1bbd;
+    background: #060d1b99;
     backdrop-filter: blur(3px);
     padding: 24px;
 }
@@ -391,6 +402,40 @@ footer p {
     max-width: 1400px;
     margin: auto;
     padding: 0 24px 22px;
+}
+html.app-fill,
+html.app-fill body,
+html.app-fill #root {
+    height: 100%;
+    min-height: 100%;
+    overflow: hidden;
+}
+html.app-fill .sandbox-app {
+    max-width: none;
+    height: 100%;
+    min-height: 100vh;
+    margin: 0;
+    padding: 0 12px 8px;
+    display: flex;
+    flex-direction: column;
+}
+html.app-fill .sandbox-header {
+    height: auto;
+    min-height: 56px;
+    padding: 6px 8px;
+    flex-shrink: 0;
+    gap: 8px;
+}
+html.app-fill .header-right {
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+html.app-fill .world-shell .viewport {
+    flex: 1;
+    width: 100%;
+    min-height: 0;
+    aspect-ratio: auto;
 }
 .sandbox-header {
     height: 76px;
@@ -859,9 +904,14 @@ footer p {
     z-index: 4;
 }
 .loading {
-    max-width: 800px;
-    margin: 15vh auto;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    text-align: center;
+    max-width: none;
+    margin: 0;
     padding: 30px;
+    background: radial-gradient(circle at 50% 35%, #244b55, #080d16 68%);
 }
 .world-shell:fullscreen {
     display: flex;
@@ -1000,7 +1050,7 @@ footer p {
 }
 @media (min-width: 850px) {
     .world-shell:not(:fullscreen) {
-        max-width: min(100%, calc((100dvh - 280px) * 16 / 9));
+        max-width: min(100%, max(640px, calc((100svh - 220px) * 16 / 9)));
         margin-inline: auto;
     }
     .sandbox-header {
@@ -1028,14 +1078,45 @@ footer p {
 .boss-bar {
     display: flex;
     align-items: center;
-    gap: 16px;
-    padding: 8px 20px;
-    background: #281e36;
-    color: #ead5ff;
+    justify-content: center;
+    gap: 20px;
+    padding: 14px 28px;
+    background: linear-gradient(180deg, #3a1424ee, #1a1028f2);
+    color: #ffe8ef;
+    border-bottom: 3px solid #ef7788;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+.boss-bar strong {
+    font-size: 30px;
+    font-weight: 800;
+    line-height: 1.1;
+    text-shadow: 0 2px 0 #140810;
 }
 .boss-bar meter {
     flex: 1;
-    height: 18px;
+    max-width: 420px;
+    height: 22px;
+}
+.boss-bar span {
+    font-size: 26px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+.boss-hunt {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px 22px;
+    padding: 8px 16px;
+    background: #141c28ee;
+    color: #f3d6ea;
+    font-size: 13px;
+    letter-spacing: 0.03em;
+    border-bottom: 1px solid #e08db4;
+}
+.boss-hunt span {
+    white-space: nowrap;
 }
 .home-screen {
     min-height: 100vh;
@@ -1172,11 +1253,22 @@ footer p {
     font-size: 18px;
     padding: 8px 12px;
 }
+.hud-fullscreen-btn {
+    position: relative;
+    z-index: 10060;
+    pointer-events: auto !important;
+    min-width: 40px;
+    font-size: 18px;
+    padding: 8px 12px;
+}
 .command-overlay,
 .tutorial-overlay,
 .continue-overlay {
     position: absolute;
-    inset: 0;
+    left: 0;
+    right: 0;
+    top: 56px;
+    bottom: 0;
     z-index: 10050;
     background: #020812dc;
     backdrop-filter: blur(5px);
@@ -1998,20 +2090,29 @@ footer p {
 .creator-panel [role="alert"] {
     color: #ffb0b0;
 }
-.ai-session-banner {
-    position: absolute;
-    bottom: 115px;
-    left: 18px;
-    z-index: 25;
-    padding: 5px 10px;
-    background: #18363eeb;
-    color: #bcf9e7;
-    font-size: 11px;
+.forge-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    background: #13232e;
     border: 1px solid #69b59c;
 }
-.ai-session-banner button {
-    padding: 3px 7px;
-    margin-left: 10px;
+.forge-progress-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 13px;
+    color: #bcf9e7;
+}
+.forge-progress progress {
+    width: 100%;
+    height: 14px;
+}
+.onboarding-list {
+    margin: 8px 0;
+    padding-left: 18px;
+    color: #bcf9e7;
 }
 .ai-meter {
     position: relative;

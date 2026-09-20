@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { CHUNK, TILE, DEPTH, MATERIALS, type WorldSave } from './model';
 import { generateChunk, hash, readTile, surface, harvestables, landmarks, biome, rustWeight, localOf, solid } from './terrain';
+import { bossSites } from './bossSites';
 interface ActiveChunk {
     graphic: Phaser.GameObjects.Graphics;
     back: Phaser.GameObjects.Graphics;
@@ -29,9 +30,10 @@ export class ChunkManager {
         // Graphics command buffers are not automatically culled like bounded sprites.
         // Keep collision preloaded, but draw only chunks near the camera.
         const view = this.scene.cameras.main.worldView, margin = 160, size = CHUNK * TILE;
+        const viewOk = view.width > 32 && view.height > 32;
         for (const [key, chunk] of this.active) {
             const [x, y] = key.split(',').map(Number);
-            const visible = x * size < view.right + margin && (x + 1) * size > view.left - margin && y * size < view.bottom + margin && (y + 1) * size > view.top - margin;
+            const visible = !viewOk || (x * size < view.right + margin && (x + 1) * size > view.left - margin && y * size < view.bottom + margin && (y + 1) * size > view.top - margin);
             chunk.graphic.setVisible(visible); chunk.back.setVisible(visible);
         }
         this.pending = [...desired].filter(k => !this.active.has(k)).sort((a, b) => { const [ax, ay] = a.split(',').map(Number), [bx, by] = b.split(',').map(Number); return Math.abs(ax - cx) + Math.abs(ay - cy) - Math.abs(bx - cx) - Math.abs(by - cy); }); }
@@ -107,7 +109,9 @@ export class ChunkManager {
                 }
                 if (mat === 0 || mat === 8 || mat === 17 || mat === 18 || mat === 19 || mat === 20 || mat === 21 || mat === 22 || mat === 23 || mat === 24 || mat === 25 || mat === 26 || mat === 27 || mat === 28 || mat === 29 || mat === 30 || mat === 31) {
                     if (y > surface(w.settings, x) + 3 || mat === 18 || mat === 19) {
-                        if (mat === 18) {
+                        if (mat === 24 || mat === 25) {
+                            // Doors stay visually open air — never paint a cave wall behind them.
+                        } else if (mat === 18) {
                             ruins.fillStyle(0x4e342e);
                             ruins.fillRect(px, py, TILE, TILE);
                             ruins.fillStyle(0x3e2723, .5);
@@ -171,26 +175,21 @@ export class ChunkManager {
                         g.fillRect(px + 3, py + 2, 5, 3);
                         g.fillRect(px + 15, py + 10, 4, 3);
                     } else if (mat === 24) {
-                        g.fillStyle(0x5c3d1e);
-                        g.fillRect(px, py, TILE, TILE);
-                        g.fillStyle(0x8b5a2b);
-                        g.fillRect(px + 3, py + 2, TILE - 6, TILE - 4);
-                        g.fillStyle(0x422a15);
-                        g.fillRect(px + 3, py + 7, TILE - 6, 2);
-                        g.fillRect(px + 3, py + 16, TILE - 6, 2);
-                        g.fillStyle(0xf1c40f);
-                        g.fillRect(px + TILE - 7, py + 11, 3, 3);
+                        g.fillStyle(0x3e2723);
+                        g.fillRect(px + 4, py, TILE - 8, TILE);
+                        g.fillStyle(0x8d6e4a);
+                        g.fillRect(px + 5, py + 1, TILE - 10, TILE - 2);
+                        g.fillStyle(0x5d4037);
+                        g.fillRect(px + 5, py + 8, TILE - 10, 2);
+                        g.fillStyle(0xffd54f);
+                        g.fillRect(px + TILE - 10, py + 12, 3, 3);
                     } else if (mat === 25) {
-                        g.fillStyle(0x5c3d1e);
-                        g.fillRect(px, py, 3, TILE);
-                        g.fillRect(px, py, TILE, 3);
-                        g.fillRect(px + TILE - 3, py, 3, TILE);
-                        g.fillStyle(0x23170e);
-                        g.fillRect(px + 3, py + 3, TILE - 6, TILE - 3);
-                        g.fillStyle(0x8b5a2b);
-                        g.fillRect(px + 3, py + 3, 5, TILE - 3);
-                        g.fillStyle(0xf1c40f);
-                        g.fillRect(px + 6, py + 11, 2, 2);
+                        g.fillStyle(0x3e2723);
+                        g.fillRect(px, py, 6, TILE);
+                        g.fillStyle(0x8d6e4a);
+                        g.fillRect(px + 1, py + 1, 4, TILE - 2);
+                        g.fillStyle(0xffd54f);
+                        g.fillRect(px + 2, py + 12, 2, 2);
                     } else if (mat >= 26 && mat <= 29) {
                         // Totem carved stone obelisk
                         g.fillStyle(0x37474f);
@@ -341,12 +340,12 @@ export class ChunkManager {
                 }
             }
             for (let lx = 0; lx < CHUNK;) {
-                if (!MATERIALS[tiles[ly * CHUNK + lx]].solid) {
+                if (!MATERIALS[tiles[ly * CHUNK + lx]].solid || tiles[ly * CHUNK + lx] === 24) {
                     lx++;
                     continue;
                 }
                 const start = lx;
-                while (lx < CHUNK && MATERIALS[tiles[ly * CHUNK + lx]].solid)
+                while (lx < CHUNK && MATERIALS[tiles[ly * CHUNK + lx]].solid && tiles[ly * CHUNK + lx] !== 24)
                     lx++;
                 const id = `${start}:${lx - start}`;
                 const above = previous.get(id);
@@ -366,6 +365,17 @@ export class ChunkManager {
             this.scene.physics.add.existing(body, true);
             this.terrain.add(body);
             bodies.push(body);
+        }
+        for (let ly = 0; ly < CHUNK; ly++) {
+            for (let lx = 0; lx < CHUNK; lx++) {
+                if (tiles[ly * CHUNK + lx] !== 24) continue;
+                const px = (cx * CHUNK + lx) * TILE + 5;
+                const py = (cy * CHUNK + ly) * TILE + TILE / 2;
+                const door = this.scene.add.rectangle(px, py, 8, TILE, 0xffffff, 0);
+                this.scene.physics.add.existing(door, true);
+                this.terrain.add(door);
+                bodies.push(door);
+            }
         }
         for (const p of harvestables(w.settings, cx)) {
             if (Math.floor((p.y - 1) / CHUNK) !== cy || w.harvested.includes(p.id))
@@ -412,16 +422,19 @@ export class ChunkManager {
             if (Math.floor(l.y / CHUNK) !== cy)
                 continue;
             const x = l.x * TILE, y = l.y * TILE;
-            // The anchor chunk owns the entire background ruin, even across a border.
-            ruins.fillStyle(0x263b47, .7);
-            ruins.fillRect(x - 120, y - 116, 240, 128);
-            ruins.lineStyle(3, 0x587480, .65);
-            ruins.strokeRect(x - 120, y - 116, 240, 128);
-            ruins.fillStyle(0x638b8d, .65);
-            ruins.fillRect(x - 100, y - 100, 10, 110);
-            ruins.fillRect(x + 92, y - 100, 10, 110);
-            ruins.fillStyle(0x98b3e4, .7);
-            ruins.fillTriangle(x + 70, y - 90, x + 58, y - 65, x + 82, y - 65);
+            const surfaceChest = l.id.startsWith('surface-chest');
+            if (!surfaceChest) {
+                // The anchor chunk owns the entire background ruin, even across a border.
+                ruins.fillStyle(0x263b47, .7);
+                ruins.fillRect(x - 120, y - 116, 240, 128);
+                ruins.lineStyle(3, 0x587480, .65);
+                ruins.strokeRect(x - 120, y - 116, 240, 128);
+                ruins.fillStyle(0x638b8d, .65);
+                ruins.fillRect(x - 100, y - 100, 10, 110);
+                ruins.fillRect(x + 92, y - 100, 10, 110);
+                ruins.fillStyle(0x98b3e4, .7);
+                ruins.fillTriangle(x + 70, y - 90, x + 58, y - 65, x + 82, y - 65);
+            }
             if (!w.opened.includes(l.id)) {
                 g.fillStyle(0xc69f68);
                 g.fillRoundedRect(x - 13, y - 20, 26, 20, 3);
@@ -432,6 +445,24 @@ export class ChunkManager {
                 g.lineStyle(2, 0x6f7477);
                 g.strokeRect(x - 13, y - 10, 26, 10);
             }
+        }
+        for (const site of bossSites(w.settings)) {
+            if (Math.floor(site.x / CHUNK) !== cx || Math.floor(site.floor / CHUNK) !== cy) continue;
+            const x = site.x * TILE, y = site.floor * TILE;
+            const tall = w.settings.difficulty === 'boss';
+            const h = tall ? 132 : 88;
+            ruins.fillStyle(0x3a2a4a, 0.72);
+            ruins.fillRect(x - 36, y - h, 72, h);
+            ruins.lineStyle(3, 0xc6adf4, 0.85);
+            ruins.strokeRect(x - 36, y - h, 72, h);
+            g.fillStyle(0x5d3d6e);
+            g.fillRect(x - 10, y - h - 8, 20, h + 8);
+            g.fillStyle(0xe08db4);
+            g.fillTriangle(x, y - h - 36, x - 22, y - h + 4, x + 22, y - h + 4);
+            g.fillStyle(0xf8e6ff);
+            g.fillCircle(x, y - h - 40, tall ? 10 : 7);
+            g.fillStyle(0xffe08a);
+            g.fillRect(x - 4, y - 18, 8, 18);
         }
         this.active.set(key, { graphic: g, back: ruins, bodies });
     }

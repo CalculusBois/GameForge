@@ -3,7 +3,6 @@ import {SaveStore} from '../sandbox/persistence';
 import {startSandbox,type SandboxController,type VerificationPort} from '../sandbox/engine';
 import {exampleSpec} from './example';
 import {validateSpec,type CreationSpec} from './spec';
-import {editTile} from '../sandbox/terrain';
 import {add} from '../sandbox/model';
 const sleep=(n:number)=>new Promise(r=>setTimeout(r,n));
 /** Dev-only, isolated real IndexedDB + real Phaser integration tests. Never opens the player database. */
@@ -15,12 +14,12 @@ export default function CreatorVerification(){
  useEffect(()=>{let alive=true;const db=`gameforge-creator-verification-${Date.now()}`;
  void (async()=>{const s=await SaveStore.open(db);store.current=s;
  const check=(ok:unknown,label:string)=>{if(!ok)throw Error(label);if(alive)report(`PASS: ${label}`);};
- await s.transact((_b,w)=>{w.coins=73;});const base=s.export();await s.beginAISession();
- await Promise.all([s.transact((b,w)=>{w.coins+=100;b.profile.owned.push('ranger');}),s.transact((_b,w)=>{w.progress.stone=9;editTile(w,100,20,0);})]);
- check(s.world.coins===173,'AI transactions compose in memory');check(s.export()===base,'Export excludes all AI progress');
- const durable=await SaveStore.open(db);check(durable.export()===base,'Actual IndexedDB unchanged by AI world and profile writes');
- s.schedulePosition(999,200,1);await s.exitAISession();await sleep(1300);check(s.export()===base,'Exit cancels delayed positions and restores pre-session state');
- await s.transact((_b,w)=>{w.coins+=2;});check((await SaveStore.open(db)).world.coins===75,'Ordinary non-AI gameplay persists after exit');
+ await s.transact((_b,w)=>{w.coins=73;});
+ const spec=validateSpec(structuredClone(exampleSpec));
+ await s.transact((_b,w)=>{w.creations=[{spec,x:400,y:200,defeated:false}];w.coins+=2;});
+ check(s.world.coins===75,'World coins persist through forged-boss writes');
+ const durable=await SaveStore.open(db);check(durable.world.coins===75,'Actual IndexedDB keeps coins');
+ check(durable.world.creations?.[0].spec.id===spec.id,'Forged boss is stored on the world');
  // Prepared combat equipment, only in the isolated database.
  await s.transact((_b,w)=>{add(w.inventory,'rifle_rail',1);});
  if(!alive||!host.current)return;
@@ -30,7 +29,7 @@ export default function CreatorVerification(){
  const check=(ok:unknown,label:string)=>{if(!ok)throw Error(label);report(`PASS: ${label}`);};
  const wait=async(fn:()=>boolean,ms=10000)=>{const end=performance.now()+ms;while(!fn()){if(performance.now()>end)throw Error('Timed out waiting for runtime condition');await sleep(50);}};
  try{
-  p.resume();await sleep(1200);p.pause();await g.save();await s.beginAISession();const base=s.export();
+  p.resume();await sleep(1200);p.pause();await g.save();
   const spec=structuredClone(exampleSpec);spec.id='verification-blade';spec.name='Prepared Sixblade';spec.stats.health=180;spec.visuals[0].shape.kind='sword';spec.visuals[0].shape.width=42;spec.visuals[0].shape.height=110;spec.visuals[1].shape.kind='sword';spec.visuals[1].count=6;spec.visuals[1].shape.height=45;spec.attacks[0].projectile.shape.kind='sword';
   g.applyCreation(validateSpec(spec));const initial=p.creatorRead!();check(initial.actors===1&&initial.textures===1,'One prepared sword actor owns one collider texture');
   for(let i=0;i<12;i++){g.removeCreation(spec.id);g.applyCreation(spec);}check(p.creatorRead!().textures===initial.textures&&p.creatorRead!().objects===initial.objects,'12 real create/remove cycles do not grow textures or display objects');
@@ -46,7 +45,7 @@ export default function CreatorVerification(){
   g.applyCreation(rot);p.creatorBuildup!('enemy-contact');check(p.creatorRead!().meterValue===40,'Accepted attack source updates reusable meter');p.creatorBuildup!('enemy-contact');p.creatorBuildup!('enemy-contact');check(p.creatorRead!().activeEffects===1,'Threshold activates one nonstacking timed effect');
   const hp=p.read().health;p.resume();await wait(()=>p.read().health<hp,5000);p.pause();check(p.read().health<hp,'Timed effect applies actual player damage on its interval');p.respawn();p.pause();check(p.creatorRead!().activeEffects===0&&p.creatorRead!().meterValue===0,'Respawn clears temporary status state');
   g.removeCreation(rot.id);check(p.creatorRead!().meters===0,'Removing mechanic removes HUD/effect ownership');g.resetCreations();check(p.creatorRead!().actors===0&&p.creatorRead!().textures===0&&p.creatorRead!().shots===0,'Reset clears all owned runtime resources');
-  check(s.export()===base,'Prepared AI encounter leaves persistent save unchanged');
+  check((s.world.creations??[]).length===0,'Reset removes forged bosses from the persistent world');
   setState('PASS — persistence, prepared combat, lifecycle and cleanup regression');setReady(true);
  }catch(e){p.hold([]);p.pause();setState(`FAILED: ${String(e)}`);setReady(true);}
  };

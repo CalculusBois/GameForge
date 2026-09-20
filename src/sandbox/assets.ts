@@ -140,6 +140,88 @@ export function sandboxAssets(scene: Phaser.Scene) {
         g.fillStyle(0x1a2a36); g.fillRect(4, 10, 6, 3);
         g.fillStyle(0x82a0b0); g.fillTriangle(0, 11, 8, 4, 8, 18);
     });
+    tex('dart_wisp', 26, 26, g => {
+        g.fillStyle(0xff8a80, 0.4); g.fillCircle(13, 13, 12);
+        g.fillStyle(0xff5252); g.fillCircle(13, 13, 7);
+        g.fillStyle(0xfff59d); g.fillCircle(13, 13, 3);
+        g.fillStyle(0xffffff); g.fillRect(20, 12, 6, 2);
+    });
+    tex('sky_gunner', 34, 30, g => {
+        g.fillStyle(0x546e7a); g.fillEllipse(17, 16, 28, 16);
+        g.fillStyle(0x90a4ae); g.fillRect(4, 14, 18, 5);
+        g.fillStyle(0xffcc80); g.fillCircle(26, 15, 4);
+        g.fillStyle(0x263238); g.fillRect(8, 8, 6, 4); g.fillRect(8, 20, 6, 4);
+    });
+    tex('razorwing', 40, 24, g => {
+        g.fillStyle(0x4a148c); g.fillTriangle(4, 12, 20, 4, 20, 20);
+        g.fillStyle(0x7b1fa2); g.fillTriangle(36, 12, 20, 4, 20, 20);
+        g.fillStyle(0xce93d8); g.fillCircle(20, 12, 5);
+        g.fillStyle(0xff1744); g.fillCircle(28, 12, 2);
+    });
+    const paintBoss = (g: Phaser.GameObjects.Graphics, w: number, h: number, color: number, accent: number, flying: boolean, motif: 'titan' | 'bloom' | 'ward' | 'wing' | 'beast') => {
+        g.fillStyle(0x101820, 0.55);
+        g.fillEllipse(w / 2, h - 8, w * 0.8, 14);
+        g.fillStyle(color);
+        if (flying || motif === 'wing') {
+            g.fillEllipse(w / 2, h * 0.55, w * 0.72, h * 0.48);
+            g.fillStyle(accent);
+            g.fillTriangle(8, h * 0.5, w / 2, 6, w / 2 - 6, h * 0.46);
+            g.fillTriangle(w - 8, h * 0.5, w / 2, 6, w / 2 + 6, h * 0.46);
+            g.fillStyle(color);
+            g.fillTriangle(w / 2, 8, 18, h * 0.42, w - 18, h * 0.42);
+        } else if (motif === 'bloom') {
+            g.fillRect(w * 0.3, h * 0.4, w * 0.4, h * 0.48);
+            g.fillEllipse(w / 2, h * 0.34, w * 0.9, h * 0.4);
+            g.fillStyle(accent);
+            for (let i = 0; i < 6; i++) g.fillCircle(16 + i * ((w - 32) / 5), 24 + (i % 2) * 12, 8);
+        } else if (motif === 'ward') {
+            g.fillTriangle(w / 2, 4, w - 6, h * 0.5, w / 2, h - 8);
+            g.fillTriangle(w / 2, 4, 6, h * 0.5, w / 2, h - 8);
+            g.fillRect(4, h * 0.34, 16, h * 0.34);
+            g.fillRect(w - 20, h * 0.34, 16, h * 0.34);
+        } else {
+            g.fillRect(w * 0.2, h * 0.16, w * 0.6, h * 0.52);
+            g.fillRect(4, h * 0.28, 18, h * 0.46);
+            g.fillRect(w - 22, h * 0.28, 18, h * 0.46);
+            g.fillRect(w * 0.24, h * 0.66, 22, h * 0.3);
+            g.fillRect(w * 0.54, h * 0.66, 22, h * 0.3);
+            if (motif === 'beast') {
+                g.fillStyle(accent);
+                g.fillTriangle(10, h * 0.22, 30, 6, 34, h * 0.3);
+                g.fillTriangle(w - 10, h * 0.22, w - 30, 6, w - 34, h * 0.3);
+            }
+        }
+        g.fillStyle(0xf4fff8);
+        g.fillRect(w * 0.3, h * 0.26, w * 0.4, 12);
+        g.fillStyle(0x1b2a36);
+        g.fillCircle(w / 2, h * 0.46, 14);
+        g.fillStyle(accent);
+        g.fillCircle(w / 2, h * 0.46, 8);
+        g.fillStyle(0xffce82);
+        g.fillCircle(w / 2, h * 0.46, 4);
+    };
+    const bossArt: [string, number, number, boolean, 'titan' | 'bloom' | 'ward' | 'wing' | 'beast'][] = [
+        ['rust_colossus', 0xc28d64, 0xffcc80, false, 'titan'],
+        ['mycelial_sovereign', 0xb18cd4, 0xe0bfec, false, 'bloom'],
+        ['aether_warden', 0x7ceae0, 0xe5fff0, true, 'ward'],
+        ['storm_seraph', 0x81d4fa, 0xe1f5fe, true, 'wing'],
+        ['slag_titan', 0xff5722, 0xffab40, false, 'titan'],
+        ['hollow_king', 0xbdbdbd, 0x76ff03, false, 'titan'],
+        ['prism_hydra', 0xea80fc, 0x18ffff, true, 'bloom'],
+        ['night_howler', 0x3949ab, 0xff1744, false, 'beast'],
+        ['ember_empress', 0xff6f00, 0xffecb3, false, 'titan'],
+        ['void_matriarch', 0x7c4dff, 0xea80fc, true, 'wing'],
+        ['glacial_tyrant', 0xb3e5fc, 0x0277bd, false, 'titan'],
+        ['spore_colossus', 0x9ccc65, 0xdcedc8, false, 'bloom'],
+        ['thunder_wraith', 0xffee58, 0x80d8ff, true, 'wing'],
+        ['magma_duke', 0xff3d00, 0xffab40, false, 'titan'],
+        ['crystal_oracle', 0xce93d8, 0x18ffff, true, 'ward'],
+    ];
+    for (const [id, color, accent, flying, motif] of bossArt) {
+        if (scene.textures.exists(id)) scene.textures.remove(id);
+        const w = 96, h = flying ? 96 : 128;
+        tex(id, w, h, g => paintBoss(g, w, h, color, accent, flying, motif));
+    }
     tex('magic', 18, 18, g => { g.fillStyle(0x9b89ff); g.fillCircle(9, 9, 9); g.fillStyle(0xf5dcff); g.fillTriangle(9, 1, 14, 10, 3, 12); });
     tex('pick-tool', 36, 36, g => {
         g.lineStyle(5, 0x8d6e4a);
@@ -340,17 +422,6 @@ export function sandboxAssets(scene: Phaser.Scene) {
             g.fillStyle(0xf9eac2); g.fillRect(23,17,8,3);
             g.fillStyle(0x26394c); g.fillRect(9,24,13,3);
             if(spec.biomeAffinity==='Fungal hollows') { g.fillStyle(0xdfbbef); g.fillEllipse(17,9,26,9); }
-        });
-    }
-
-    for (const [id,color] of [['rust_colossus',0xc28d64],['mycelial_sovereign',0xb18cd4],['aether_warden',0x7ceae0]] as const) {
-        tex(id,80,80,g=>{
-            g.fillStyle(0x13232e);g.fillEllipse(40,73,72,10);
-            g.fillStyle(color);
-            if(id==='rust_colossus') { g.fillRect(15,18,50,44);g.fillRect(4,24,10,40);g.fillRect(66,24,10,40);g.fillRect(20,60,13,18);g.fillRect(48,60,13,18); }
-            else if(id==='mycelial_sovereign') { g.fillRect(24,34,32,41);g.fillEllipse(40,28,76,45);g.fillStyle(0xe0bfec);for(let i=0;i<5;i++)g.fillCircle(12+i*13,22+(i%2)*9,4); }
-            else { g.fillTriangle(40,2,69,40,40,74);g.fillTriangle(40,2,11,40,40,74);g.fillRect(2,29,9,24);g.fillRect(69,29,9,24); }
-            g.fillStyle(0xe5fff0);g.fillRect(29,31,22,5);g.fillStyle(0x334855);g.fillCircle(40,49,8);g.fillStyle(0xffce82);g.fillCircle(40,49,4);
         });
     }
 

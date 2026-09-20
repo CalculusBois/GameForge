@@ -1,5 +1,6 @@
 import { MODULAR_WARDROBE, WEAPON_SKINS } from './registry/cosmetics';
 import { initialBundle, SAVE_VERSION, GENERATOR_VERSION, ITEMS, SKINS, OBJECTIVES, validateSettings, WORLD_LIMIT, TILE, DEPTH, type Bundle, type WorldSave, type ItemId } from './model';
+import { validateSpec } from '../creator/spec';
 export function validateBundle(value: unknown): asserts value is Bundle {
     const b = value as Bundle;
     if (!b || ![1, SAVE_VERSION].includes(b.version) || !b.worlds || !b.profile || (Object.keys(b.worlds).length ? !b.worlds[b.active] : b.active !== ''))
@@ -27,6 +28,16 @@ export function validateBundle(value: unknown): asserts value is Bundle {
             if (!['copper_ore','iron','silver_ore','gold_ore','cobalt_ore'].includes(f.ore) || !['coal','wood'].includes(f.fuel) || !['copper_bar','bar','silver_bar','gold_bar','cobalt_bar'].includes(f.output) || ![f.remaining,f.stored].every(n=>Number.isInteger(n)&&n>=0&&n<=99) || !Number.isFinite(f.progressMs) || f.progressMs<0 || f.progressMs>=10000 || !Number.isFinite(f.fuelMs) || f.fuelMs<0 || f.fuelMs>1040000) throw new Error('Invalid furnace state.');
         }
         if (w.meal && (!['damage','defense','speed','regen','vitality'].includes(w.meal.type) || !Number.isFinite(w.meal.magnitude) || w.meal.magnitude<0 || w.meal.magnitude>25 || !Number.isFinite(w.meal.remainingMs) || w.meal.remainingMs<0 || w.meal.remainingMs>480000)) throw new Error('Invalid meal effect.');
+        if (w.creations) {
+            if (!Array.isArray(w.creations) || w.creations.length > 8) throw new Error('Invalid forged creations.');
+            w.creations = w.creations.filter(c => {
+                try { validateSpec(c.spec); } catch { return false; }
+                return Number.isFinite(c.x) && Number.isFinite(c.y) && typeof c.defeated === 'boolean';
+            });
+        }
+        if (w.discoveredItems && (!Array.isArray(w.discoveredItems) || !w.discoveredItems.every(id => typeof id === 'string'))) throw new Error('Invalid field journal.');
+        if (w.discoveredEnemies && (!Array.isArray(w.discoveredEnemies) || !w.discoveredEnemies.every(id => typeof id === 'string'))) throw new Error('Invalid field journal.');
+        if (w.onboarding && ![w.onboarding.mined, w.onboarding.smelted, w.onboarding.cooked, w.onboarding.equipped].every(v => typeof v === 'boolean')) throw new Error('Invalid onboarding checklist.');
         for (const [key, inv] of Object.entries(w.containers ?? {})) {
             if (!/^-?\d+,-?\d+$/.test(key) || inv.length !== 16 || !inv.every(s=>s===null || ITEMS[s.id] && Number.isInteger(s.count) && s.count>0 && s.count<=ITEMS[s.id].stack)) throw new Error('Invalid storage contents.');
         }
@@ -50,25 +61,7 @@ export function validateBundle(value: unknown): asserts value is Bundle {
 function openDatabase(name='gameforge-frontier'): Promise<IDBDatabase> { return new Promise((resolve, reject) => { const r = indexedDB.open(name, 1); r.onupgradeneeded = () => r.result.createObjectStore('saves'); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); r.onblocked = () => reject(new Error('Close another GameForge tab to update local storage.')); }); }
 export class SaveStore {
     data: Bundle;
-    private beforeAI?: Bundle;
     private generation = 0;
-    get aiSession() { return !!this.beforeAI; }
-    async beginAISession() {
-        await this.queue;
-        if(this.beforeAI) return;
-        if(this.timer) clearTimeout(this.timer);
-        this.timer=undefined; this.position=undefined;
-        this.beforeAI=structuredClone(this.data);
-        this.data=structuredClone(this.data);
-        this.generation++;
-        this.onChange?.();
-    }
-    async exitAISession() {
-        if(this.timer) clearTimeout(this.timer);
-        this.timer=undefined; this.position=undefined;
-        await this.queue;
-        if(this.beforeAI) { this.data=this.beforeAI; this.beforeAI=undefined; this.generation++; this.onChange?.(); }
-    }
     private db: IDBDatabase;
     private queue: Promise<unknown> = Promise.resolve();
     private timer: ReturnType<typeof setTimeout> | undefined;
@@ -91,10 +84,6 @@ export class SaveStore {
         const generation = this.generation;
         const run = this.queue.then(() => new Promise<T>((resolve, reject) => {
             if(generation !== this.generation) { reject(new Error('Session changed; stale transaction discarded.')); return; }
-            if(this.beforeAI) {
-                try { const next=structuredClone(this.data); const result=change(next,next.worlds[next.active]); validateBundle(next); this.data=next; this.onChange?.(); resolve(result); } catch(e) { reject(e); }
-                return;
-            }
             const tx = this.db.transaction('saves', 'readwrite'), table = tx.objectStore('saves'), read = table.get('bundle');
             let next: Bundle, result: T, failure: unknown;
             read.onsuccess = () => { try {
@@ -141,5 +130,5 @@ export class SaveStore {
     b.profile.gunSkins = [...new Set([...(b.profile.gunSkins ?? []), ...(value.profile.gunSkins ?? [])])];
     b.profile.outfit = { ...b.profile.outfit, ...value.profile.outfit };
     b.profile.guns = { ...b.profile.guns, ...value.profile.guns }; b.active = active; }); }
-    export() { return JSON.stringify(this.beforeAI ?? this.data, null, 2); }
+    export() { return JSON.stringify(this.data, null, 2); }
 }

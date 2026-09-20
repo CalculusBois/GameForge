@@ -1,7 +1,7 @@
 import { CreatorPanel } from "./creator/CreatorPanel";
 import type { CreationSpec } from "./creator/spec";
 import { SHOP_CATALOG } from "./sandbox/registry/economy";
-import { buySupply } from "./sandbox/shop";
+import { buySupply, listingKey } from "./sandbox/shop";
 import { bossSites } from "./sandbox/bossSites";
 import { BOSS_REGISTRY } from "./sandbox/registry/bosses";
 import { MODULAR_WARDROBE, WEAPON_SKINS } from "./sandbox/registry/cosmetics";
@@ -27,7 +27,6 @@ import { useEffect, useRef, useState } from "react";
 import { SaveStore } from "./sandbox/persistence";
 import {
     startSandbox,
-    type PlayerSessionSnapshot,
     type SandboxController,
     type SandboxHud,
     type Menu,
@@ -51,34 +50,39 @@ import {
     unlock,
     claim,
     newWorld,
+    ownsStation,
     equipItem,
     unequipItem,
     useVitalityCore,
     useManaCore,
     derivePlayerStats,
+    compareItem,
+    placedTiles,
     type ItemId,
     type SkinId,
     type WorldSettings,
 } from "./sandbox/model";
+import { ENEMIES } from "./sandbox/enemies";
 import { itemIconUrl } from "./sandbox/itemIcons";
 import { landmarks } from "./sandbox/terrain";
 import { downloadCsv } from "./analytics";
 import StatsPanel from "./components/StatsPanel";
 import { gameAudio } from "./sandbox/audio";
-let opening: Promise<SaveStore> | undefined;
 function ItemIcon({
     id,
     size = "md",
     label,
+    skin,
 }: {
     id: ItemId | string;
     size?: "sm" | "md";
     label?: string;
+    skin?: string;
 }) {
     return (
         <img
             className={`item-icon${size === "sm" ? " sm" : ""}`}
-            src={itemIconUrl(id)}
+            src={itemIconUrl(id, skin)}
             alt={label ?? ITEMS[id as ItemId]?.name ?? id}
             draggable={false}
         />
@@ -204,6 +208,7 @@ const EMPTY: SandboxHud = {
     mana: 100,
     maxMana: 100,
     hunger: 100,
+    ammo: 64,
     defense: 0,
     status: "paused",
     biome: "Verdant frontier",
@@ -219,6 +224,15 @@ const EMPTY: SandboxHud = {
     recall: 0,
     activeEffects: [],
 };
+function listedBossSites(world: {
+    settings: WorldSettings;
+    discoveredBosses?: string[];
+}) {
+    const sites = bossSites(world.settings);
+    return world.settings.difficulty === "boss"
+        ? sites
+        : sites.filter((s) => world.discoveredBosses?.includes(s.id));
+}
 export default function App() {
     const [store, setStore] = useState<SaveStore | null>(null),
         [revision, setRevision] = useState(0),
@@ -231,16 +245,14 @@ export default function App() {
         [settings, setSettings] = useState<WorldSettings>({ ...DEFAULT_WORLD }),
         [sellId, setSellId] = useState<ItemId>("stone"),
         [quantity, setQuantity] = useState(1),
+        [marketTab, setMarketTab] = useState<"sell" | "skins" | "supplies">("sell"),
         [debug, setDebug] = useState(false),
         [shake, setShake] = useState(true),
         [aiPrompt, setAiPrompt] = useState("");
     const [craftTab, setCraftTab] = useState<
         "all" | "workbench" | "forge" | "smelting" | "cooking"
     >("all");
-    const beforeAIPlayer = useRef<PlayerSessionSnapshot | undefined>(undefined);
-    const restorePlayer = useRef<PlayerSessionSnapshot | undefined>(undefined);
     const [creations, setCreations] = useState<CreationSpec[]>([]);
-    const [sessionRevision, setSessionRevision] = useState(0);
     const [volume, setVolume] = useState(0.35);
     const [gunFamily, setGunFamily] = useState<string>("blaster");
     const [recipeSearch, setRecipeSearch] = useState("");
@@ -260,22 +272,31 @@ export default function App() {
     } | null>(null);
 
     const [deleteTarget, setDeleteTarget] = useState("");
+    const [forgeStatus, setForgeStatus] = useState("Checking Forge…");
+    const [forgeOrder, setForgeOrder] = useState("");
     const host = useRef<HTMLDivElement>(null),
         frame = useRef<HTMLDivElement>(null),
         engine = useRef<SandboxController | null>(null),
         dialog = useRef<HTMLElement | null>(null);
     useEffect(() => {
         let alive = true;
-        opening ??= SaveStore.open();
-        void opening
+        const timeout = window.setTimeout(() => {
+            if (alive)
+                setError(
+                    "Save storage is taking too long. Close other GameForge tabs and reload.",
+                );
+        }, 4000);
+        void SaveStore.open()
             .then((s) => {
                 if (alive) setStore(s);
             })
             .catch((e) => {
-                if (alive) setError(String(e));
-            });
+                if (alive) setError(e instanceof Error ? e.message : String(e));
+            })
+            .finally(() => window.clearTimeout(timeout));
         return () => {
             alive = false;
+            window.clearTimeout(timeout);
         };
     }, []);
     useEffect(() => {
@@ -288,6 +309,10 @@ export default function App() {
         };
     }, [store]);
     const active = store?.data.active;
+    useEffect(() => {
+        if (!store) return;
+        setCreations((store.world?.creations ?? []).map((c) => c.spec));
+    }, [store, active, revision, gameState]);
     useEffect(() => {
         if (!store || gameState !== "playing" || !host.current) return;
         let alive = true;
@@ -309,10 +334,7 @@ export default function App() {
                         }
                     }
                 },
-                undefined,
-                restorePlayer.current,
             );
-            restorePlayer.current = undefined;
         } catch (e) {
             setError(String(e));
         }
@@ -321,23 +343,108 @@ export default function App() {
             engine.current?.destroy();
             engine.current = null;
         };
-    }, [store, active, gameState, sessionRevision]);
+    }, [store, active, gameState]);
     useEffect(() => {
         engine.current?.setShake(shake);
         engine.current?.setVolume(volume);
         gameAudio.setVolume(volume);
     }, [shake, volume, active, gameState]);
     useEffect(() => {
+        let alive = true;
+        void fetch("/api/parley/health")
+            .then((r) => r.json())
+            .then((d) => {
+                if (!alive) return;
+                const order =
+                    (d.order as string | undefined) ||
+                    (d.labels as string[] | undefined)?.join(" → ") ||
+                    "local synthesizer";
+                const primary =
+                    (d.primaryLabel as string | undefined) || "local synthesizer";
+                setForgeOrder(order);
+                setForgeStatus(
+                    d.hasParley && d.primary === "parley"
+                        ? `MIT Parley · ${d.parleyModel || d.model || "gpt-6-astra"}`
+                        : `Forge · ${primary} first`,
+                );
+            })
+            .catch(() => {
+                if (alive) setForgeStatus("Forge offline");
+            });
+        return () => {
+            alive = false;
+        };
+    }, []);
+    useEffect(() => {
         if (menu) dialog.current?.focus();
     }, [menu]);
     void revision;
+    const resumeGame = () => {
+        gameAudio.unlock();
+        gameAudio.startBgm();
+        engine.current?.resume();
+    };
+    const toggleFullscreen = () => {
+        const node = frame.current ?? document.documentElement;
+        const doc = document as Document & {
+            webkitFullscreenElement?: Element | null;
+            webkitExitFullscreen?: () => Promise<void> | void;
+        };
+        const el = node as HTMLElement & {
+            webkitRequestFullscreen?: () => Promise<void> | void;
+        };
+        const filled = document.documentElement.classList.contains("app-fill");
+        const setFill = (on: boolean) => {
+            document.documentElement.classList.toggle("app-fill", on);
+            window.dispatchEvent(new Event("resize"));
+        };
+        const active =
+            document.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+        void (async () => {
+            if (active) {
+                try {
+                    if (document.exitFullscreen) await document.exitFullscreen();
+                    else await doc.webkitExitFullscreen?.();
+                } catch { /* stay in fill mode if the host blocks exit */ }
+                setFill(false);
+                return;
+            }
+            if (filled) {
+                setFill(false);
+                return;
+            }
+            try {
+                if (node.requestFullscreen) await node.requestFullscreen();
+                else if (el.webkitRequestFullscreen)
+                    await el.webkitRequestFullscreen();
+                else await document.documentElement.requestFullscreen();
+            } catch { /* hosts that block Fullscreen API still get a window-fill layout */ }
+            await new Promise((r) => window.setTimeout(r, 40));
+            const now =
+                document.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
+            if (!now) setFill(true);
+        })();
+    };
+    const close = () => {
+        setMenu(null);
+        setSlot(null);
+        resumeGame();
+    };
     const open = (m: Menu, opts?: { craftTab?: typeof craftTab }) => {
+        if (menu === m && !opts?.craftTab) {
+            close();
+            return;
+        }
         engine.current?.pause();
         gameAudio.stopBgm();
         setMenu(m);
         setSlot(null);
         setNotice("");
-        if (m === "crafting" && opts?.craftTab) setCraftTab(opts.craftTab);
+        if (m === "shop") setMarketTab("sell");
+        if (m === "crafting") {
+            if (opts?.craftTab) setCraftTab(opts.craftTab);
+            else if (!hud.stationFocus) setCraftTab("all");
+        }
     };
     const act = async (fn: () => Promise<unknown>) => {
         if (pending) return;
@@ -352,39 +459,10 @@ export default function App() {
             setPending(false);
         }
     };
-    const enterAI = async () => {
-        if (!store || store.aiSession) return;
-        await engine.current?.save();
-        beforeAIPlayer.current = engine.current?.capturePlayer();
-        await store.beginAISession();
-    };
-    const exitAI = async () => {
-        engine.current?.pause();
-        await engine.current?.save();
-        engine.current?.destroy();
-        engine.current = null;
-        await store?.exitAISession();
-        restorePlayer.current = beforeAIPlayer.current;
-        beforeAIPlayer.current = undefined;
-        setCreations([]);
-        setSessionRevision((v) => v + 1);
-        setNotice("AI session exited. Pre-session progress restored.");
-    };
-    const resumeGame = () => {
-        gameAudio.unlock();
-        gameAudio.startBgm();
-        engine.current?.resume();
-    };
-    const close = () => {
-        setMenu(null);
-        setSlot(null);
-        resumeGame();
-    };
     /** Leave the run and open the worlds / creation screen. */
     const goToWorlds = () => {
         void act(async () => {
             await engine.current?.save().catch(() => undefined);
-            if (store?.aiSession) await exitAI();
             gameAudio.stopBgm();
             setMenu(null);
             setShowSearch(false);
@@ -439,6 +517,18 @@ export default function App() {
         }
     }, [gameState]);
     useEffect(() => {
+        if (gameState !== "playing" || hud.status !== "dead") return;
+        const onKey = (event: KeyboardEvent) => {
+            if (event.repeat) return;
+            if (event.code === "KeyR") {
+                event.preventDefault();
+                engine.current?.respawn();
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [gameState, hud.status]);
+    useEffect(() => {
         if (
             gameState === "playing" &&
             hud.status === "playing" &&
@@ -491,7 +581,30 @@ export default function App() {
                     setShowSearch(false);
                     setSearchQuery("");
                     resumeGame();
+                } else if (menu) {
+                    event.preventDefault();
+                    close();
                 }
+                return;
+            }
+            const menuKey =
+                event.code === "KeyI"
+                    ? "inventory"
+                    : event.code === "KeyC"
+                      ? "crafting"
+                      : event.code === "KeyM"
+                        ? "map"
+                        : null;
+            if (
+                menuKey &&
+                gameState === "playing" &&
+                !typing &&
+                !showSearch &&
+                !showTutorial
+            ) {
+                event.preventDefault();
+                if (event.repeat) return;
+                open(menuKey);
                 return;
             }
             // Return / Enter opens search (Mac Return = Enter)
@@ -519,6 +632,26 @@ export default function App() {
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
     }, [showSearch, showTutorial, gameState, menu, hud.status]);
+    if (gameState === "home")
+        return (
+            <main className="home-screen">
+                <div className="home-card">
+                    <p className="eyebrow">LUMEN FRONTIER</p>
+                    <h1>
+                        GAME<span>FORGE</span>
+                    </h1>
+                    <p>A WORLD TO DISCOVER</p>
+                    <button
+                        className="primary"
+                        onClick={() => {
+                            gameAudio.unlock();
+                            setGameState("worlds");
+                        }}>
+                        START EXPEDITION
+                    </button>
+                </div>
+            </main>
+        );
     if (!store)
         return (
             <main className="loading">
@@ -535,6 +668,12 @@ export default function App() {
                         never silently replaced.
                     </p>
                 )}
+                <button
+                    className="primary"
+                    type="button"
+                    onClick={() => setGameState("home")}>
+                    Back
+                </button>
             </main>
         );
     const worldsList = Object.values(store.data.worlds).sort(
@@ -542,6 +681,17 @@ export default function App() {
     );
     const world = store.data.worlds[store.data.active],
         profile = store.data.profile;
+    const stationTab =
+        hud.stationFocus === "workbench"
+            ? ("workbench" as const)
+            : hud.stationFocus === "forge"
+              ? ("forge" as const)
+              : hud.stationFocus === "furnace"
+                ? ("smelting" as const)
+                : hud.stationFocus === "cooking"
+                  ? ("cooking" as const)
+                  : null;
+    const shownCraftTab = stationTab ?? craftTab;
     const transact = (fn: Parameters<SaveStore["transact"]>[0]) =>
         act(() => store.transact(fn));
     const deleteWorld = (id: string) =>
@@ -720,6 +870,11 @@ export default function App() {
                 axe: "axe_wood",
                 gun: "blaster",
                 blaster_gun: "blaster",
+                saber: "lightsaber",
+                light_saber: "lightsaber",
+                lightsabre: "lightsaber",
+                bullets: "ammo",
+                ammunition: "ammo",
                 cooking_station: "station_cooking",
                 workbench: "station_workbench",
                 furnace: "station_furnace",
@@ -766,26 +921,6 @@ export default function App() {
         if (query.startsWith("/")) setNotice("Nothing matched that search.");
         closeSearch();
     };
-    if (gameState === "home")
-        return (
-            <main className="home-screen">
-                <div className="home-card">
-                    <p className="eyebrow">LUMEN FRONTIER</p>
-                    <h1>
-                        GAME<span>FORGE</span>
-                    </h1>
-                    <p>A WORLD TO DISCOVER</p>
-                    <button
-                        className="primary"
-                        onClick={() => {
-                            gameAudio.unlock();
-                            setGameState("worlds");
-                        }}>
-                        START EXPEDITION
-                    </button>
-                </div>
-            </main>
-        );
     if (gameState === "worlds" || !world)
         return (
             <main className="worlds-select">
@@ -817,6 +952,8 @@ export default function App() {
                                 <p>
                                     {w.settings.difficulty === "extreme"
                                         ? "EXTREME"
+                                        : w.settings.difficulty === "boss"
+                                          ? "BOSS MODE"
                                         : w.settings.difficulty}{" "}
                                     · seed {w.settings.seed}
                                 </p>
@@ -890,6 +1027,7 @@ export default function App() {
                                 <option value="explorer">Explorer</option>
                                 <option value="standard">Standard</option>
                                 <option value="extreme">EXTREME</option>
+                                <option value="boss">Boss mode — shrines marked on HUD and map</option>
                             </select>
                         </label>
                         {(["roughness", "caves", "abundance"] as const).map(
@@ -966,8 +1104,11 @@ export default function App() {
                     <small>LUMEN FRONTIER · A WORLD TO DISCOVER</small>
                 </div>
                 <div className="header-right">
-                    <span className="ai-status" style={{ color: "#76e6c4" }}>
-                        ✦ MIT Parley AI
+                    <span
+                        className="ai-status"
+                        style={{ color: "#76e6c4" }}
+                        title={forgeOrder || forgeStatus}>
+                        ✦ {forgeStatus}
                     </span>
                     <button
                         type="button"
@@ -991,17 +1132,18 @@ export default function App() {
                         disabled={pending}>
                         Worlds & creation
                     </button>
+                    <button
+                        type="button"
+                        className="hud-fullscreen-btn"
+                        aria-label="Fullscreen"
+                        title="Fullscreen"
+                        onPointerDown={(e) => e.preventDefault()}
+                        onClick={toggleFullscreen}>
+                        ⛶
+                    </button>
                 </div>
             </header>
             <section className="world-shell" ref={frame}>
-                {store.aiSession && (
-                    <div className="ai-session-banner">
-                        AI SESSION · All progress temporary{" "}
-                        <button onClick={() => void exitAI()}>
-                            Exit & restore save
-                        </button>
-                    </div>
-                )}
                 {hud.aiMeters?.map((m) => (
                     <div
                         className="ai-meter"
@@ -1022,15 +1164,7 @@ export default function App() {
                     </div>
                 ))}
                 <div
-                    className="world-hud"
-                    style={
-                        hud.status !== "playing" &&
-                        !menu &&
-                        !showSearch &&
-                        !showTutorial
-                            ? { pointerEvents: "none" }
-                            : undefined
-                    }>
+                    className="world-hud">
                     <div className="hud-menu-container">
                         <button
                             type="button"
@@ -1079,12 +1213,7 @@ export default function App() {
                                     onPointerDown={(e) => e.preventDefault()}
                                     onClick={() => {
                                         setHudMenuOpen(false);
-                                        void (
-                                            store.aiSession
-                                                ? exitAI()
-                                                : (engine.current?.save() ??
-                                                  Promise.resolve())
-                                        ).finally(() => {
+                                        void (engine.current?.save() ?? Promise.resolve()).finally(() => {
                                             gameAudio.stopBgm();
                                             setGameState("home");
                                         });
@@ -1129,6 +1258,36 @@ export default function App() {
                         </span>
                         <meter min="0" max="100" value={hud.hunger} />
                     </div>
+                    <div className="vital">
+                        <span>
+                            AMMO <b>{hud.ammo ?? count(world.inventory, "ammo")}</b>
+                        </span>
+                    </div>
+                    {world.furnace && (world.furnace.remaining > 0 || world.furnace.stored > 0 || world.furnace.fuelMs > 0) && (
+                        <div className="vital">
+                            <span>
+                                FURNACE{" "}
+                                <b>
+                                    {world.furnace.remaining > 0
+                                        ? `${Math.round((world.furnace.progressMs / 10000) * 100)}%`
+                                        : world.furnace.stored
+                                          ? "READY"
+                                          : `fuel ${(world.furnace.fuelMs / 1000).toFixed(0)}s`}
+                                </b>
+                            </span>
+                            <meter
+                                min="0"
+                                max={10000}
+                                value={
+                                    world.furnace.remaining > 0
+                                        ? world.furnace.progressMs
+                                        : world.furnace.stored
+                                          ? 10000
+                                          : Math.min(10000, world.furnace.fuelMs)
+                                }
+                            />
+                        </div>
+                    )}
                     {cmdToast && (
                         <div
                             className={`cmd-toast cmd-toast-${cmdToast.kind}`}
@@ -1219,26 +1378,34 @@ export default function App() {
                     </button>
                     <button
                         type="button"
+                        className="hud-fullscreen-btn"
                         aria-label="Fullscreen"
-                        onClick={() => {
-                            if (document.fullscreenElement)
-                                void document.exitFullscreen();
-                            else
-                                void frame.current
-                                    ?.requestFullscreen()
-                                    .catch(() =>
-                                        setNotice(
-                                            "Fullscreen is unavailable here.",
-                                        ),
-                                    );
+                        title="Fullscreen"
+                        onPointerDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                        }}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            toggleFullscreen();
                         }}>
                         ⛶
                     </button>
                 </div>
+                {hud.bossHunt && world.settings.difficulty === "boss" && (
+                    <div className="boss-hunt" role="status">
+                        {hud.bossHunt.map((h) => (
+                            <span key={h.id}>
+                                {h.defeated ? "✓" : "◆"} {h.name} · {h.tiles}{" "}
+                                tiles {h.dir}
+                            </span>
+                        ))}
+                    </div>
+                )}
                 {hud.boss && (
-                    <div className="boss-bar">
+                    <div className="boss-bar" role="status">
                         <strong>
-                            {hud.boss.name} · Phase {hud.boss.phase}
+                            BOSS NEAR · {hud.boss.name}
                         </strong>
                         <meter
                             min="0"
@@ -1246,7 +1413,7 @@ export default function App() {
                             value={hud.boss.hp}
                         />
                         <span>
-                            {hud.boss.hp}/{hud.boss.maxHp}
+                            {hud.boss.hp} / {hud.boss.maxHp} HP
                         </span>
                     </div>
                 )}
@@ -1363,6 +1530,33 @@ export default function App() {
                                         cancels recall.
                                     </p>
                                 </article>
+                                <article>
+                                    <h3>Expedition checklist</h3>
+                                    <ul className="onboarding-list">
+                                        {[
+                                            ["mined", "Mine a block"],
+                                            ["smelted", "Collect a smelted bar"],
+                                            ["cooked", "Cook a meal"],
+                                            ["equipped", "Equip armor or a charm"],
+                                        ].map(([key, label]) => (
+                                            <li key={key}>
+                                                {world.onboarding?.[
+                                                    key as keyof NonNullable<
+                                                        typeof world.onboarding
+                                                    >
+                                                ]
+                                                    ? "✓"
+                                                    : "○"}{" "}
+                                                {label}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                    <p>
+                                        Mining, smelting, cooking, and equipping
+                                        gear are world progress — they save
+                                        normally.
+                                    </p>
+                                </article>
                             </div>
                         </section>
                     </div>
@@ -1398,6 +1592,7 @@ export default function App() {
                                 <button
                                     type="button"
                                     className="primary"
+                                    autoFocus={hud.status === "dead"}
                                     onClick={() => {
                                         if (hud.status === "dead")
                                             engine.current?.respawn();
@@ -1432,12 +1627,12 @@ export default function App() {
                                                 cooking: "Cooking station",
                                                 skins: "Explorer wardrobe",
                                                 objectives: "Earn coins",
-                                                shop: "Salvage exchange",
+                                                shop: "Market",
                                                 map: "Survey map",
                                                 worlds: "Your worlds",
                                                 settings: "Expedition settings",
                                                 stats: "Player stats & charts",
-                                                forge: "✦ MIT Parley Generative Forge",
+                                                forge: "✦ Generative Forge",
                                                 storage: "Storage crate",
                                             }[menu]
                                         }
@@ -1985,7 +2180,10 @@ export default function App() {
                                                         className={`item-slot ${i < 8 ? "quick" : ""} ${slot === i ? "chosen" : ""}`}
                                                         title={
                                                             s
-                                                                ? `${ITEMS[s.id].name} ×${s.count} — ${ITEMS[s.id].description}`
+                                                                ? compareItem(
+                                                                      world,
+                                                                      s.id,
+                                                                  )
                                                                 : `Empty slot ${i + 1}`
                                                         }
                                                         onClick={() => {
@@ -2423,6 +2621,7 @@ export default function App() {
                                                     .join(" · ")}
                                             </p>
                                         )}
+                                        {!stationTab && (
                                         <div
                                             style={{
                                                 display: "flex",
@@ -2432,7 +2631,7 @@ export default function App() {
                                             }}>
                                             <button
                                                 className={
-                                                    craftTab === "all"
+                                                    shownCraftTab === "all"
                                                         ? "primary"
                                                         : ""
                                                 }
@@ -2443,7 +2642,7 @@ export default function App() {
                                             </button>
                                             <button
                                                 className={
-                                                    craftTab === "workbench"
+                                                    shownCraftTab === "workbench"
                                                         ? "primary"
                                                         : ""
                                                 }
@@ -2454,7 +2653,7 @@ export default function App() {
                                             </button>
                                             <button
                                                 className={
-                                                    craftTab === "forge"
+                                                    shownCraftTab === "forge"
                                                         ? "primary"
                                                         : ""
                                                 }
@@ -2465,7 +2664,7 @@ export default function App() {
                                             </button>
                                             <button
                                                 className={
-                                                    craftTab === "cooking"
+                                                    shownCraftTab === "cooking"
                                                         ? "primary"
                                                         : ""
                                                 }
@@ -2474,7 +2673,7 @@ export default function App() {
                                                 }
                                                 style={{
                                                     background:
-                                                        craftTab === "cooking"
+                                                        shownCraftTab === "cooking"
                                                             ? "#c47a3a"
                                                             : "#2a1c14",
                                                     borderColor: "#e0a060",
@@ -2485,7 +2684,7 @@ export default function App() {
                                             </button>
                                             <button
                                                 className={
-                                                    craftTab === "smelting"
+                                                    shownCraftTab === "smelting"
                                                         ? "primary"
                                                         : ""
                                                 }
@@ -2494,7 +2693,7 @@ export default function App() {
                                                 }
                                                 style={{
                                                     background:
-                                                        craftTab === "smelting"
+                                                        shownCraftTab === "smelting"
                                                             ? "#e67e22"
                                                             : "#2c1e14",
                                                     borderColor: "#e67e22",
@@ -2504,6 +2703,12 @@ export default function App() {
                                                 🔥 Furnace Smelting
                                             </button>
                                         </div>
+                                        )}
+                                        {stationTab && (
+                                            <p>
+                                                Showing {stationTab === "smelting" ? "furnace" : stationTab} recipes only. Step away from the station to browse every recipe.
+                                            </p>
+                                        )}
                                         {world.furnace && (
                                             <article>
                                                 <h3>
@@ -2553,19 +2758,21 @@ export default function App() {
                                                 </p>
                                             </article>
                                         )}
-                                        {craftTab === "cooking" ? (
+                                        {shownCraftTab === "cooking" ? (
                                             <>
                                                 <p>
-                                                    {hud.nearCooking
+                                                    {ownsStation(world, "station_cooking", 34)
+                                                        ? hud.nearCooking
                                                         ? "Cooking station connected · place meals on the spit or use the outpost kitchen."
-                                                        : "Return to the outpost cooking station, or place a Cooking station from your pack."}{" "}
+                                                        : "Place your Cooking station, then stand next to it to cook."
+                                                        : "Craft or buy a Cooking station first — recipes stay locked until you own one."}{" "}
                                                     One meal buff at a time; no
                                                     spoilage. Select food in
                                                     your hotbar and press J to
                                                     eat.
                                                 </p>
                                                 <div className="recipe-grid">
-                                                    {COOKING_RECIPES.map(
+                                                    {ownsStation(world, "station_cooking", 34) ? COOKING_RECIPES.map(
                                                         (r) => (
                                                             <article key={r.id}>
                                                                 <h3
@@ -2643,10 +2850,12 @@ export default function App() {
                                                                 </button>
                                                             </article>
                                                         ),
+                                                    ) : (
+                                                        <p>Craft or buy a Cooking station to unlock these recipes.</p>
                                                     )}
                                                 </div>
                                             </>
-                                        ) : craftTab === "smelting" ? (
+                                        ) : shownCraftTab === "smelting" ? (
                                             <div
                                                 className="smelting-panel"
                                                 style={{
@@ -2663,9 +2872,11 @@ export default function App() {
                                                         margin: 0,
                                                         color: "#9fc1cc",
                                                     }}>
-                                                    {hud.nearBase
-                                                        ? "Linked furnace: one shared output/queue per world. 10 seconds per bar during active play. Coal burns 80s; wood burns 20s. Processing pauses in menus and while closed."
-                                                        : "Return to the outpost to operate the smelting furnace."}
+                                                    {ownsStation(world, "station_furnace", 33)
+                                                        ? hud.nearFurnace
+                                                        ? "Linked furnace: 10 seconds per bar during play. Leftover coal stays in the furnace — adding more ore will not consume extra fuel until that burn is spent."
+                                                        : "Place your Stone furnace and stand next to it to smelt."
+                                                        : "Buy a Stone furnace from the shop (or craft one), then place it. Ingots cannot be made from All Recipes."}
                                                 </p>
                                                 <div
                                                     style={{
@@ -2836,11 +3047,10 @@ export default function App() {
                                                     const oreNeeded =
                                                         recipe.oreCount *
                                                         smeltCount;
-                                                    const fuelNeeded =
-                                                        Math.ceil(
-                                                            smeltCount /
-                                                                fuelDef.smeltsPerUnit,
-                                                        );
+                                                    const leftoverMs = world.furnace && world.furnace.remaining === 0 && world.furnace.fuel === smeltFuel ? world.furnace.fuelMs : 0;
+                                                    const neededMs = (smeltCount / fuelDef.smeltsPerUnit) * fuelDef.burnDurationSeconds * 1000;
+                                                    const extraMs = Math.max(0, neededMs - leftoverMs);
+                                                    const fuelNeeded = extraMs > 0 ? Math.ceil(extraMs / (fuelDef.burnDurationSeconds * 1000)) : 0;
                                                     const haveOre = count(
                                                         world.inventory,
                                                         recipe.oreId,
@@ -2850,17 +3060,11 @@ export default function App() {
                                                         fuelDef.id,
                                                     );
                                                     const canSmelt =
-                                                        !(
-                                                            world.furnace &&
-                                                            (world.furnace
-                                                                .remaining ||
-                                                                world.furnace
-                                                                    .stored)
-                                                        ) &&
+                                                        ownsStation(world, "station_furnace", 33) &&
+                                                        !(world.furnace && world.furnace.remaining > 0) &&
                                                         hud.nearFurnace &&
                                                         haveOre >= oreNeeded &&
-                                                        haveFuel >=
-                                                            fuelNeeded &&
+                                                        haveFuel >= fuelNeeded &&
                                                         !pending;
                                                     return (
                                                         <div
@@ -3007,9 +3211,15 @@ export default function App() {
                                         ) : (
                                             <>
                                                 <p>
-                                                    {hud.nearBase
-                                                        ? "Workbench and forge connected."
-                                                        : "Return to the outpost to use the workbench and forge."}{" "}
+                                                    {shownCraftTab === "workbench"
+                                                        ? hud.nearCrafting
+                                                            ? "Workbench connected. Only workbench recipes are listed here."
+                                                            : "Stand at a workbench to craft these."
+                                                        : shownCraftTab === "forge"
+                                                          ? hud.nearCrafting
+                                                              ? "Forge connected. Only forge equipment recipes are listed here."
+                                                              : "Stand at the outpost forge to craft these."
+                                                          : "Not beside a station — browsing every workbench and forge recipe. Stand at a station to craft."}{" "}
                                                     Crafted items go into your
                                                     pack; move equipment into a
                                                     hotbar slot.
@@ -3023,14 +3233,13 @@ export default function App() {
                                                                 .includes(
                                                                     recipeSearch.toLowerCase(),
                                                                 ) &&
-                                                            (craftTab ===
-                                                                "all" ||
-                                                                (craftTab ===
-                                                                "workbench"
-                                                                    ? r.station ===
-                                                                      "Workbench"
-                                                                    : r.station ===
-                                                                      "Forge")),
+                                                            r.station !== "Cooking" &&
+                                                            !r.id.startsWith("smelt_") &&
+                                                            (shownCraftTab === "all"
+                                                                ? r.station === "Workbench" || r.station === "Forge"
+                                                                : shownCraftTab === "workbench"
+                                                                  ? r.station === "Workbench"
+                                                                  : r.station === "Forge"),
                                                     ).map((r) => {
                                                         const enough =
                                                             Object.entries(
@@ -3126,7 +3335,9 @@ export default function App() {
                                                                 <button
                                                                     disabled={
                                                                         !enough ||
-                                                                        !hud.nearCrafting ||
+                                                                        (r.station === "Workbench"
+                                                                            ? hud.stationFocus !== "workbench"
+                                                                            : hud.stationFocus !== "forge") ||
                                                                         pending
                                                                     }
                                                                     onClick={() =>
@@ -3138,7 +3349,9 @@ export default function App() {
                                                                                 craft(
                                                                                     w,
                                                                                     r.id,
-                                                                                    !!hud.nearCrafting,
+                                                                                    r.station === "Workbench"
+                                                                                        ? hud.stationFocus === "workbench"
+                                                                                        : hud.stationFocus === "forge",
                                                                                 ),
                                                                         )
                                                                     }>
@@ -3508,10 +3721,18 @@ export default function App() {
                                         </div>
                                     </>
                                 )}
-                                {menu === "shop" && (
-                                    <div className="recipe-grid">
-                                        {SHOP_CATALOG.map((p) => (
-                                            <article key={p.itemId}>
+                                {menu === "shop" && marketTab === "supplies" && (
+                                    <div>
+                                        {(["consumable", "gear", "building", "resource"] as const).map(cat => {
+                                            const items = SHOP_CATALOG.filter(p => p.category === cat);
+                                            if (!items.length) return null;
+                                            const labels = { consumable: "Supplies", gear: "Stations & gear", building: "Building", resource: "Bulk resources" };
+                                            return (
+                                                <div key={cat} style={{ marginBottom: 18 }}>
+                                                    <h3 style={{ margin: "0 0 8px", color: "#76e6c4", letterSpacing: "0.06em", fontSize: 12 }}>{labels[cat]}</h3>
+                                                    <div className="recipe-grid">
+                                        {items.map((p) => (
+                                            <article key={listingKey(p)}>
                                                 <h3
                                                     style={{
                                                         display: "flex",
@@ -3525,8 +3746,16 @@ export default function App() {
                                                     {p.name}
                                                 </h3>
                                                 <p>
-                                                    {p.count} items ·{" "}
-                                                    {p.buyPrice} coins
+                                                    {p.count}{" "}
+                                                    {ITEMS[p.itemId].name}
+                                                    {p.extras?.map((e) => (
+                                                        <span key={e.itemId}>
+                                                            {" "}
+                                                            + {e.count}{" "}
+                                                            {ITEMS[e.itemId].name}
+                                                        </span>
+                                                    ))}{" "}
+                                                    · {p.buyPrice} coins
                                                 </p>
                                                 <button
                                                     disabled={
@@ -3538,7 +3767,7 @@ export default function App() {
                                                         void transact((_b, w) =>
                                                             buySupply(
                                                                 w,
-                                                                p.itemId,
+                                                                listingKey(p),
                                                                 hud.nearBase,
                                                             ),
                                                         )
@@ -3547,14 +3776,64 @@ export default function App() {
                                                 </button>
                                             </article>
                                         ))}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
                                     </div>
                                 )}
                                 {menu === "shop" && (
                                     <>
                                         <p>
                                             {hud.nearBase
-                                                ? "Bulk sales: 20 timber/stone → 1 coin; 40 soil → 1; 10 herbs → 1; 10 scrap → 2. Gold ore/bars and crafted items cannot be sold."
-                                                : "Return to the outpost terminal to sell resources."}
+                                                ? "Sell gathered resources for coins, then spend those coins on explorer skins. Gold ore, bars, and crafted gear cannot be sold."
+                                                : "Stand at the outpost market stall, then press E to trade."}
+                                        </p>
+                                        <div
+                                            style={{
+                                                display: "flex",
+                                                gap: "8px",
+                                                marginBottom: "12px",
+                                                flexWrap: "wrap",
+                                            }}>
+                                            <button
+                                                className={
+                                                    marketTab === "sell"
+                                                        ? "primary"
+                                                        : ""
+                                                }
+                                                onClick={() =>
+                                                    setMarketTab("sell")
+                                                }>
+                                                Sell items
+                                            </button>
+                                            <button
+                                                className={
+                                                    marketTab === "skins"
+                                                        ? "primary"
+                                                        : ""
+                                                }
+                                                onClick={() =>
+                                                    setMarketTab("skins")
+                                                }>
+                                                Buy skins
+                                            </button>
+                                            <button
+                                                className={
+                                                    marketTab === "supplies"
+                                                        ? "primary"
+                                                        : ""
+                                                }
+                                                onClick={() =>
+                                                    setMarketTab("supplies")
+                                                }>
+                                                Buy supplies
+                                            </button>
+                                        </div>
+                                        {marketTab === "sell" && (
+                                            <>
+                                        <p>
+                                            Bulk sales: 20 timber/stone → 1 coin; 40 soil → 1; 10 herbs → 1; 10 scrap → 2.
                                         </p>
                                         <p>
                                             Uncollected combat resources are
@@ -3653,8 +3932,10 @@ export default function App() {
                                                 />
                                             </label>
                                             <p>
-                                                {quantity} ×{" "}
-                                                {ITEMS[sellId].value} ={" "}
+                                                Complete-bundle sale only — no
+                                                per-item rounding.{" "}
+                                                {quantity}{" "}
+                                                {ITEMS[sellId].name} ={" "}
                                                 <strong>
                                                     {saleValue(
                                                         sellId,
@@ -3662,6 +3943,10 @@ export default function App() {
                                                     )}{" "}
                                                     coins
                                                 </strong>
+                                                {saleValue(sellId, quantity) ===
+                                                    0 && quantity > 0
+                                                    ? " (need a full bundle)"
+                                                    : ""}
                                             </p>
                                             <button
                                                 className="primary"
@@ -3681,7 +3966,7 @@ export default function App() {
                                                     void transact((_b, w) => {
                                                         if (!hud.nearBase)
                                                             throw new Error(
-                                                                "Return to the outpost.",
+                                                                "Sell resources at the outpost market.",
                                                             );
                                                         return sellResource(
                                                             w,
@@ -3695,17 +3980,149 @@ export default function App() {
                                                 coins
                                             </button>
                                         </div>
+                                            </>
+                                        )}
+                                        {marketTab === "skins" && (
+                                            <>
+                                                <p>
+                                                    Skins are appearance only. Coins come from this world; owned skins stay on your explorer across worlds.
+                                                </p>
+                                                <p>
+                                                    ◈ {world.coins} coins on hand
+                                                </p>
+                                                <div className="skin-grid">
+                                                    {SKINS.map((s) => {
+                                                        const owned =
+                                                                profile.owned.includes(
+                                                                    s.id,
+                                                                ),
+                                                            equipped =
+                                                                profile.equipped ===
+                                                                s.id;
+                                                        return (
+                                                            <article
+                                                                key={s.id}
+                                                                className={
+                                                                    equipped
+                                                                        ? "equipped"
+                                                                        : ""
+                                                                }>
+                                                                <SkinPortrait
+                                                                    id={s.id}
+                                                                />
+                                                                <h3>{s.name}</h3>
+                                                                <p>{s.description}</p>
+                                                                <button
+                                                                    disabled={
+                                                                        equipped ||
+                                                                        pending ||
+                                                                        !hud.nearBase
+                                                                    }
+                                                                    onClick={() =>
+                                                                        void transact(
+                                                                            (b) => {
+                                                                                if (!hud.nearBase)
+                                                                                    throw new Error(
+                                                                                        "Trade skins at the outpost market.",
+                                                                                    );
+                                                                                if (owned) {
+                                                                                    if (
+                                                                                        !b.profile.owned.includes(
+                                                                                            s.id,
+                                                                                        )
+                                                                                    )
+                                                                                        throw new Error(
+                                                                                            "Unlock this skin first.",
+                                                                                        );
+                                                                                    b.profile.equipped =
+                                                                                        s.id;
+                                                                                    return `${s.name} equipped`;
+                                                                                }
+                                                                                return unlock(
+                                                                                    b,
+                                                                                    s.id,
+                                                                                );
+                                                                            },
+                                                                        )
+                                                                    }>
+                                                                    {equipped
+                                                                        ? "Equipped"
+                                                                        : owned
+                                                                          ? "Equip · free"
+                                                                          : `Unlock · ${s.price} coins`}
+                                                                </button>
+                                                            </article>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </>
+                                        )}
                                     </>
                                 )}
                                 {menu === "map" && (
                                     <div>
-                                        {bossSites(world.settings)
-                                            .filter((s) =>
-                                                world.discoveredBosses?.includes(
-                                                    s.id,
-                                                ),
+                                        <h3>Field journal</h3>
+                                        <p>
+                                            Resources:{" "}
+                                            {(
+                                                world.discoveredItems ??
+                                                world.inventory
+                                                    .filter(Boolean)
+                                                    .map((s) => s!.id)
                                             )
-                                            .map((s) => (
+                                                .filter(
+                                                    (id, i, all) =>
+                                                        all.indexOf(id) === i,
+                                                )
+                                                .map(
+                                                    (id) =>
+                                                        ITEMS[id as ItemId]
+                                                            ?.name ?? id,
+                                                )
+                                                .join(", ") || "None yet"}
+                                        </p>
+                                        <p>
+                                            Enemies:{" "}
+                                            {(world.discoveredEnemies ?? [])
+                                                .map(
+                                                    (id) =>
+                                                        ENEMIES[id]?.name ??
+                                                        BOSS_REGISTRY[id]
+                                                            ?.name ??
+                                                        world.creations?.find(
+                                                            (c) =>
+                                                                c.spec.id ===
+                                                                id,
+                                                        )?.spec.name ??
+                                                        id,
+                                                )
+                                                .join(", ") || "None yet"}
+                                        </p>
+                                        <h3>Markers</h3>
+                                        <p>
+                                            Outpost ● · Chests ◈ · Furnaces ▲ ·
+                                            Forged bosses ✦ · Regional shrines ◆
+                                            {world.settings.difficulty ===
+                                            "boss"
+                                                ? " (boss mode marks all three from the start)"
+                                                : ""}
+                                        </p>
+                                        {placedTiles(world, 33).map((p) => (
+                                            <p key={`furnace-${p.x}-${p.y}`}>
+                                                ▲ Furnace: {p.x}, {p.y}
+                                            </p>
+                                        ))}
+                                        {(world.creations ?? []).map((c) => (
+                                            <p key={c.spec.id}>
+                                                ✦ {c.spec.name}:{" "}
+                                                {Math.round(c.x / TILE)},{" "}
+                                                {Math.round(c.y / TILE)}{" "}
+                                                {c.defeated
+                                                    ? "— defeated"
+                                                    : "— active on this world"}
+                                            </p>
+                                        ))}
+                                        {listedBossSites(world).map((s) => (
                                                 <p key={s.id}>
                                                     ◆ {BOSS_REGISTRY[s.id].name}
                                                     : {s.x}, {s.floor}{" "}
@@ -3817,6 +4234,81 @@ export default function App() {
                                                 r="4"
                                                 fill="#fff"
                                             />
+                                            {placedTiles(world, 33).map((p) => {
+                                                const x = Math.floor(p.x / CHUNK);
+                                                const y = Math.floor(p.y / CHUNK);
+                                                if (!world.explored[`${x},${y}`])
+                                                    return null;
+                                                const cx = Math.floor(
+                                                    hud.x / (CHUNK * TILE),
+                                                );
+                                                return (
+                                                    <text
+                                                        key={`furnace-${p.x}-${p.y}`}
+                                                        x={305 + (x - cx) * 22}
+                                                        y={y * 45 + 52}
+                                                        fill="#ffb74d"
+                                                        fontSize="11">
+                                                        ▲
+                                                    </text>
+                                                );
+                                            })}
+                                            {(world.creations ?? []).map((c) => {
+                                                const x = Math.floor(
+                                                    c.x / TILE / CHUNK,
+                                                );
+                                                const y = Math.floor(
+                                                    c.y / TILE / CHUNK,
+                                                );
+                                                if (!world.explored[`${x},${y}`])
+                                                    return null;
+                                                const cx = Math.floor(
+                                                    hud.x / (CHUNK * TILE),
+                                                );
+                                                return (
+                                                    <text
+                                                        key={c.spec.id}
+                                                        x={305 + (x - cx) * 22}
+                                                        y={y * 45 + 28}
+                                                        fill="#76e6c4"
+                                                        fontSize="11">
+                                                        ✦
+                                                    </text>
+                                                );
+                                            })}
+                                            {listedBossSites(world).map((s) => {
+                                                    const x = Math.floor(
+                                                        s.x / CHUNK,
+                                                    );
+                                                    const y = Math.floor(
+                                                        s.floor / CHUNK,
+                                                    );
+                                                    if (
+                                                        world.settings
+                                                            .difficulty !==
+                                                            "boss" &&
+                                                        !world.explored[
+                                                            `${x},${y}`
+                                                        ]
+                                                    )
+                                                        return null;
+                                                    const cx = Math.floor(
+                                                        hud.x / (CHUNK * TILE),
+                                                    );
+                                                    return (
+                                                        <text
+                                                            key={s.id}
+                                                            x={
+                                                                305 +
+                                                                (x - cx) * 22
+                                                            }
+                                                            y={y * 45 + 36}
+                                                            fill="#e08db4"
+                                                            fontSize="14">
+                                                            ◆
+                                                        </text>
+                                                    );
+                                                })}
                                         </svg>
                                         <button
                                             onClick={() => {
@@ -3961,6 +4453,9 @@ export default function App() {
                                                         <option value="extreme">
                                                             EXTREME
                                                         </option>
+                                                        <option value="boss">
+                                                            Boss mode
+                                                        </option>
                                                     </select>
                                                 </label>
                                                 {(
@@ -4083,7 +4578,6 @@ export default function App() {
                                                                     newSettings,
                                                                 );
                                                                 await engine.current?.save();
-                                                                await enterAI();
                                                                 await store.transact(
                                                                     (b) => {
                                                                         const w =
@@ -4100,7 +4594,8 @@ export default function App() {
                                                                 );
                                                                 setAiPrompt("");
                                                                 setMenu(null);
-                                                                return "Temporary AI world created. Exit AI session to restore your previous world.";
+                                                                setGameState("playing");
+                                                                return "Parley world created and saved. Forged bosses on a world stay with that world.";
                                                             }
                                                         })
                                                     }>
@@ -4254,7 +4749,7 @@ export default function App() {
                                             jumps; J or left click
                                             attacks/mines; F or right click
                                             places; Hold E gathers trees/plants;
-                                            E opens chests; Q casts Blink; R
+                                            E opens chests; Q blinks (5 damage, no cooldown); R
                                             casts Shield; 1–8 selects; H
                                             recalls; I inventory; C crafting; M
                                             map; Escape pauses.
@@ -4269,20 +4764,17 @@ export default function App() {
                                             Save now
                                         </button>
                                         <button onClick={() => open("forge")}>
-                                            Open session creator for AI
-                                            mechanics
+                                            Open MIT Parley Forge
                                         </button>
                                     </>
                                 )}
                                 {menu === "forge" && (
                                     <CreatorPanel
-                                        key={sessionRevision}
+                                        key={store.data.active}
                                         store={store}
                                         engine={() => engine.current}
                                         creations={creations}
                                         onCreations={setCreations}
-                                        onEnter={enterAI}
-                                        onExit={exitAI}
                                     />
                                 )}
                             </div>
@@ -4316,7 +4808,22 @@ export default function App() {
                                     : "Empty hotbar slot"
                             }>
                             <kbd>{i + 1}</kbd>
-                            <span>{s ? <ItemIcon id={s.id} /> : "·"}</span>
+                            <span>
+                                {s ? (
+                                    <ItemIcon
+                                        id={s.id}
+                                        skin={
+                                            GUN_FAMILIES.includes(
+                                                s.id as (typeof GUN_FAMILIES)[number],
+                                            )
+                                                ? profile.guns?.[s.id]
+                                                : undefined
+                                        }
+                                    />
+                                ) : (
+                                    "·"
+                                )}
+                            </span>
                             <small>{s?.count ?? ""}</small>
                             <label>{s ? ITEMS[s.id].name : "Empty"}</label>
                         </button>
@@ -4345,10 +4852,10 @@ export default function App() {
                     [
                         ["inventory", "Inventory · I"],
                         ["crafting", "Crafting · C"],
-                        ["skins", "Skins"],
+                        ["skins", "Wardrobe"],
                         ["forge", "✦ MIT Parley"],
                         ["objectives", "Earn coins"],
-                        ["shop", "Sell resources"],
+                        ["shop", "Market"],
                         ["map", "Map · M"],
                         ["stats", "Stats"],
                         ["settings", "Settings"],
@@ -4370,7 +4877,7 @@ export default function App() {
                 <span>
                     <kbd>A D</kbd> Move <kbd>SPACE</kbd> Jump <kbd>J</kbd>{" "}
                     Attack/Mine <kbd>F</kbd> Place <kbd>E</kbd> Gather/Use{" "}
-                    <kbd>Q</kbd> Blink <kbd>R</kbd> Shield
+                    <kbd>Q</kbd> Blink (5 dmg) <kbd>R</kbd> Shield
                 </span>
                 <span>
                     Next:{" "}

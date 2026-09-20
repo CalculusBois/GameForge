@@ -73,19 +73,40 @@ export interface Landmark {
     y: number;
     kind: 'chest' | 'shrine';
 }
+export function restChestY(s: WorldSettings, x: number, hintY: number): number {
+    const start = Math.max(1, Math.min(DEPTH - 4, Math.floor(hintY)));
+    const isGround = (ty: number) => {
+        const t = baseTile(s, x, ty);
+        return t !== 0 && t !== 23;
+    };
+    for (let ty = start; ty < DEPTH - 2; ty++) {
+        if (isGround(ty) && !isGround(ty - 1) && baseTile(s, x, ty - 1) !== 23) return ty;
+    }
+    for (let ty = start; ty >= 2; ty--) {
+        if (isGround(ty) && !isGround(ty - 1) && baseTile(s, x, ty - 1) !== 23) return ty;
+    }
+    return Math.max(2, surface(s, x));
+}
 export function landmarks(s: WorldSettings, cx: number): Landmark[] { const min = cx * CHUNK, max = min + CHUNK, out: Landmark[] = []; for (let owner = Math.floor(min / 128) - 1; owner <= Math.floor(max / 128); owner++) {
     const x = owner * 128 + 78;
     if (x >= min && x < max)
-        out.push({ id: `chest:${owner}`, x, y: Math.floor(caveAxis(s, x)) + 2, kind: 'chest' });
+        out.push({ id: `chest:${owner}`, x, y: restChestY(s, x, Math.floor(caveAxis(s, x)) + 2), kind: 'chest' });
 } if (70 >= min && 70 < max)
-    out.push({ id: 'landing-cache', x: 70, y: Math.floor(nearCave(70)) + 2, kind: 'chest' }); return out; }
+    out.push({ id: 'landing-cache', x: 70, y: restChestY(s, 70, Math.floor(nearCave(70)) + 2), kind: 'chest' });
+    for (let owner = Math.floor(min / 72) - 1; owner <= Math.floor(max / 72); owner++) {
+        const x = owner * 72 + 18 + Math.floor(hash(s.seed, owner, 0, 'surface-chest') * 28);
+        if (x < min || x >= max || x >= -8 && x <= 40) continue;
+        if (hash(s.seed, owner, 1, 'surface-chest') < 0.42) continue;
+        out.push({ id: `surface-chest:${owner}`, x, y: restChestY(s, x, surface(s, x)), kind: 'chest' });
+    }
+    return out; }
 export function baseTile(s: WorldSettings, x: number, y: number): Material {
     if (y >= DEPTH - 2 || Math.abs(x) >= WORLD_LIMIT)
         return 6;
     if (y < 0)
         return 0;
     for (const site of bossSites(s)) {
-        if (Math.abs(x-site.x) <= 17 && y >= site.floor-11 && y <= site.floor+1) {
+        if (Math.abs(x-site.x) <= 17 && y >= site.floor-16 && y <= site.floor+1) {
             if (y >= site.floor) return 2;
             return 0;
         }
@@ -240,6 +261,11 @@ export function sweepUnsupportedHarvest(w: WorldSave, aroundX: number, radiusChu
     return removed;
 }
 export function protectedTile(x: number, y: number) { return x >= 6 && x <= 24 && y >= 18 && y <= 24; }
+export const OUTPOST_X = 16 * TILE;
+export const OUTPOST_Y = 22 * TILE;
+export function inOutpost(px: number, py: number, pad = 0) {
+    return Math.abs(px - OUTPOST_X) < 320 + pad && Math.abs(py - OUTPOST_Y) < 140 + pad;
+}
 
 export function rustWeight(s:WorldSettings,x:number){if(Math.abs(x)<100)return 0;return Math.max(0,Math.min(1,(Math.sin(x/180+hash(s.seed,0,0,'biome')*2)+.1)/.4));}
 

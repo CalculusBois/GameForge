@@ -69,7 +69,11 @@ describe('Vite Parley API Plugin', () => {
     const parsed = JSON.parse(res.body);
     expect(parsed.ok).toBe(true);
     expect(parsed.hasKey).toBe(true);
-    expect(parsed.model).toBe('gpt-6-astra');
+    expect(parsed.parleyModel).toBe('gpt-6-astra');
+    expect(parsed.providers).toContain('local');
+    expect(parsed.order).toMatch(/local synthesizer/);
+    expect(typeof parsed.primary).toBe('string');
+    expect(typeof parsed.model).toBe('string');
   });
 
   it('handles POST /api/edit-game with malformed JSON gracefully', async () => {

@@ -4,7 +4,7 @@ import { collectFurnace } from './simulation';
 import {useEffect,useRef,useState} from 'react';
 import {startSandbox,type VerificationPort} from './engine';
 import {SaveStore} from './persistence';
-import {TILE,count,craft,claim,unlock,smelt,cookDish,eatFood,} from './model';
+import {TILE,count,craft,claim,unlock,smelt,cookDish,eatFood,add,} from './model';
 import {solid,readTile,clearLine} from './terrain';
 import {type Kind} from './enemies';
 const sleep=(ms:number)=>new Promise<void>(r=>setTimeout(r,ms));
@@ -55,7 +55,7 @@ async function run(p:VerificationPort,s:SaveStore,log:(s:string)=>void,stage:(s:
  stage('Fresh world: harvesting and starter equipment');check(s.world.coins===0&&count(s.world.inventory,'wood')===0&&count(s.world.inventory,'iron')===0,'Fresh world starts without test coins or materials');p.resume();await wait(()=>p.read().grounded);await go(110);p.hold(['KeyE']);await wait(()=>count(s.world.inventory,'wood')>=8,5000);p.hold([]);check(count(s.world.inventory,'wood')===8,'Naturally gathered timber from the guaranteed tree');
  await go(630);for(let x=27;x<=32;x++) { await go((x+.5)*TILE); await mine(x,22); }
  check(count(s.world.inventory,'copper_ore')>=6,'Naturally mined six accessible copper ore blocks');
- await returnHome();p.pause();await s.transact((_b,w)=>smelt(w,'copper_ore','wood',3,true));
+ await returnHome();p.pause();await s.transact((_b,w)=>{add(w.inventory,'station_furnace',1);return smelt(w,'copper_ore','wood',3,true);});
  check(count(s.world.inventory,'copper_bar')===0,'Queue reserves inputs without immediate output');
  const frozen=s.world.furnace?.progressMs; await sleep(500);check(s.world.furnace?.progressMs===frozen,'Furnace pauses with gameplay');
  p.resume();await wait(()=>s.world.furnace?.stored===3,65000);p.pause();await s.transact((_b,w)=>collectFurnace(w,true));
@@ -66,7 +66,7 @@ async function run(p:VerificationPort,s:SaveStore,log:(s:string)=>void,stage:(s:
  check(s.data.profile.owned.includes('ranger'),'Bought a cosmetic using earned objective coins');p.resume();
  await go(680);await mine(28,23);check(count(s.world.inventory,'iron')>=1,'Upgraded pickaxe mines iron through real input');
  await go(700);p.hold(['KeyE']);await wait(()=>count(s.world.inventory,'berries')>=3,4000);p.hold([]);await returnHome();p.pause();
- await s.transact((_b,w)=>cookDish(w,'cook_berry_dish',true));await s.transact((_b,w)=>eatFood(w,'dish_berry'));
+ await s.transact((_b,w)=>{add(w.inventory,'station_cooking',1);return cookDish(w,'cook_berry_dish',true);});await s.transact((_b,w)=>eatFood(w,'dish_berry'));
  check(s.world.meal?.type==='speed','Cooked naturally foraged berries; consuming installs one meal buff');
  await p.save();const coreReopen=await SaveStore.open(db);
  check(count(coreReopen.world.inventory,'pickaxe_copper')===1&&coreReopen.world.meal?.type==='speed','IndexedDB reopen preserves tool, meal and drained hunger');

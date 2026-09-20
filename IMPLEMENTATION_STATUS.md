@@ -1,5 +1,14 @@
 # Implementation status — audited 2026-09-20
 
+## Persistent Forge and remaining F/G gaps (2026-09-20)
+
+- **Forge bosses save on the world.** Temporary AI sessions removed. `world.creations` holds up to 8 specs + spawn + defeated flag. Reload restores living bosses. First defeat pays 60–150 coins. Coins, inventory, terrain, and cosmetics are normal saves during Forge use.
+- **Economy:** central `ECONOMY_TABLE` with bulk sizes and shop buy list; décor pack grants banners/lamps/torches atomically; vendor buy > bundle resale tested; complete-bundle sales only (no per-item rounding). Existing gold and owned cosmetics preserved.
+- **Gun skins:** equipped family skins recolor the held weapon and hotbar icon. Damage/fire rate unchanged.
+- **Wardrobe:** mix-and-match layers use distinct silhouettes (brim, horns, antennae, cape) and follow idle/run/jump/hurt pose. Collision unchanged.
+- **QoL:** field journal; map SVG markers for outpost, chests, furnaces, regional bosses, and forged bosses; recipe-discovery notices; comparison tooltips; onboarding checklist.
+- **Unverified this session:** live browser Forge create → reload; natural 10–20 minute first-cosmetic timing (estimated in economy comments only); gun-skin in-world appearance in browser.
+
 Previous milestone checkmarks were not reliable: the starting checkout fails typecheck with 12 errors. This audit supersedes them. Checkpoint: `checkpoints/pre-audit-20260920.tar.gz` (source/config/docs; excludes secrets and browser saves). Existing unrelated AI Forge work retained.
 
 Classification uses actual call sites, not registry presence. “Verified” below specifies the evidence; it does not imply natural-play balance.

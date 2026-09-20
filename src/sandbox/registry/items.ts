@@ -115,7 +115,9 @@ export type ItemId =
   | 'platform_wood'
   | 'wall_wood'
   | 'wall_stone'
-  | 'door_wood';
+  | 'door_wood'
+  | 'ammo'
+  | 'lightsaber';
 
 export const ITEMS: Record<ItemId, ItemDefinition> = {
   // === Legacy Preserved Items ===
@@ -898,9 +900,29 @@ export const ITEMS: Record<ItemId, ItemDefinition> = {
     name: 'Timber door',
     icon: '🚪',
     stack: 10,
-    description: 'Place in an opening to enclose your shelter. Press E to open or close.',
+    description: 'Place in a two-block opening to enclose your shelter. Press E to open or close.',
     category: 'building',
     value: 4,
+  },
+  ammo: {
+    id: 'ammo',
+    name: 'Universal ammo',
+    icon: '⁍',
+    stack: 99,
+    description: 'Every weapon spends 1 ammo per attack. Found in chests and sold at the outpost.',
+    category: 'consumable',
+    value: 1,
+    buyPrice: 4,
+  },
+  lightsaber: {
+    id: 'lightsaber',
+    name: 'Lightsaber',
+    icon: '⚔',
+    stack: 1,
+    description: 'A humming plasma blade. Swing to strike, or hold the blade toward incoming fire to reflect bullets. /give only.',
+    category: 'weapon',
+    value: 0,
+    tier: 4,
   },
 };
 

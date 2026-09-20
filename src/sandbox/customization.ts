@@ -11,7 +11,11 @@ export function wardrobe(b: Bundle) {
 }
 export function packPrice(b: Bundle, setName: string) {
   const owned = b.profile.parts ?? STARTER_PARTS;
-  return Math.ceil(Object.values(MODULAR_WARDROBE).filter(p => p.setName === setName && !owned.includes(p.id)).reduce((n,p)=>n+p.price,0)*.85);
+  const parts = Object.values(MODULAR_WARDROBE).filter(p => p.setName === setName);
+  const remaining = parts.filter(p => !owned.includes(p.id));
+  if (!remaining.length || parts.every(p => p.price === 0)) return 0;
+  const discounted = Math.ceil(remaining.reduce((n,p)=>n+p.price,0)*.85);
+  return remaining.length === parts.length ? Math.max(300, discounted) : discounted;
 }
 export function buyPart(b: Bundle, id: string) {
   const p=wardrobe(b), part=MODULAR_WARDROBE[id];

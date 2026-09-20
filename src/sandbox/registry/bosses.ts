@@ -272,9 +272,85 @@ export const BOSS_REGISTRY: Record<string, BossDefinition> = {
   },
 };
 
+function uniqueBoss(
+  id: string, name: string, title: string, flying: boolean, hp: number, damage: number, speed: number,
+  biome: string, loot: BossDefinition['lootTable']
+): BossDefinition {
+  return {
+    id, name, title, baseClass: flying ? 'BaseFlyingBoss' : 'BaseGroundBoss',
+    maxHp: hp, damage, speed, coinReward: 100, biome,
+    hitbox: { width: flying ? 48 : 52, height: flying ? 36 : 56 },
+    collider: { width: flying ? 44 : 48, height: flying ? 32 : 52 },
+    phases: [
+      {
+        phaseNumber: 1, triggerHpPercent: 1, name: 'Opening assault',
+        speedMultiplier: 1, attackIntervalMs: 2100, telegraphDurationMs: 700,
+        attacks: [{ name: 'Sweep', description: 'Telegraphed strike.', damage, range: 340, cooldownMs: 2100, telegraphColor: '#ffb74d' }],
+      },
+      {
+        phaseNumber: 2, triggerHpPercent: 0.5, name: 'Enraged',
+        speedMultiplier: 1.25, attackIntervalMs: 1500, telegraphDurationMs: 550,
+        attacks: [{ name: 'Fury volley', description: 'Faster barrage.', damage: damage + 8, range: 420, cooldownMs: 1500, telegraphColor: '#ef5350' }],
+      },
+    ],
+    lootTable: loot,
+  };
+}
+
+Object.assign(BOSS_REGISTRY, {
+  storm_seraph: uniqueBoss('storm_seraph', 'Storm Seraph', 'Skybreaker', true, 720, 22, 70, 'Frost highlands', [
+    { item: 'silver_bar', guaranteedCount: 4, bonusChance: 0.6, bonusCount: 2 },
+    { item: 'ammo', guaranteedCount: 40, bonusChance: 1, bonusCount: 20 },
+  ]),
+  slag_titan: uniqueBoss('slag_titan', 'Slag Titan', 'Walking Kiln', false, 980, 30, 32, 'Ashen depths', [
+    { item: 'obsidian', guaranteedCount: 6, bonusChance: 0.5, bonusCount: 3 },
+    { item: 'cobalt_bar', guaranteedCount: 2, bonusChance: 0.4, bonusCount: 1 },
+  ]),
+  hollow_king: uniqueBoss('hollow_king', 'Hollow King', 'Crown of Ash', false, 860, 26, 48, 'Ashen depths', [
+    { item: 'gold_bar', guaranteedCount: 3, bonusChance: 0.7, bonusCount: 2 },
+    { item: 'ammo', guaranteedCount: 32, bonusChance: 1, bonusCount: 16 },
+  ]),
+  prism_hydra: uniqueBoss('prism_hydra', 'Prism Hydra', 'Triple Gaze', true, 900, 24, 58, 'Crystal depths', [
+    { item: 'crystal', guaranteedCount: 8, bonusChance: 0.8, bonusCount: 4 },
+    { item: 'aether_crystal', guaranteedCount: 2, bonusChance: 0.5, bonusCount: 1 },
+  ]),
+  night_howler: uniqueBoss('night_howler', 'Night Howler', 'Moonless Pack', false, 640, 20, 90, 'Verdant frontier', [
+    { item: 'meat_raw', guaranteedCount: 6, bonusChance: 0.6, bonusCount: 3 },
+    { item: 'ammo', guaranteedCount: 28, bonusChance: 1, bonusCount: 12 },
+  ]),
+  ember_empress: uniqueBoss('ember_empress', 'Ember Empress', 'Cinder Crown', false, 940, 28, 44, 'Ashen depths', [
+    { item: 'gold_ore', guaranteedCount: 6, bonusChance: 0.6, bonusCount: 3 },
+    { item: 'staff_ember', guaranteedCount: 1, bonusChance: 0, bonusCount: 0 },
+  ]),
+  void_matriarch: uniqueBoss('void_matriarch', 'Void Matriarch', 'Umbral Nest', true, 880, 26, 64, 'Fungal hollows', [
+    { item: 'aether_crystal', guaranteedCount: 3, bonusChance: 0.6, bonusCount: 2 },
+    { item: 'ammo', guaranteedCount: 36, bonusChance: 1, bonusCount: 16 },
+  ]),
+  glacial_tyrant: uniqueBoss('glacial_tyrant', 'Glacial Tyrant', 'Permafrost Crown', false, 1020, 32, 28, 'Frost highlands', [
+    { item: 'silver_bar', guaranteedCount: 5, bonusChance: 0.7, bonusCount: 2 },
+    { item: 'wand_frost', guaranteedCount: 1, bonusChance: 0, bonusCount: 0 },
+  ]),
+  spore_colossus: uniqueBoss('spore_colossus', 'Spore Colossus', 'Blooming Ruin', false, 1100, 24, 26, 'Fungal hollows', [
+    { item: 'mushroom_edible', guaranteedCount: 8, bonusChance: 0.8, bonusCount: 4 },
+    { item: 'herb', guaranteedCount: 10, bonusChance: 1, bonusCount: 6 },
+  ]),
+  thunder_wraith: uniqueBoss('thunder_wraith', 'Thunder Wraith', 'Sky Fracture', true, 760, 28, 80, 'Verdant frontier', [
+    { item: 'ammo', guaranteedCount: 48, bonusChance: 1, bonusCount: 24 },
+    { item: 'crystal', guaranteedCount: 6, bonusChance: 0.7, bonusCount: 3 },
+  ]),
+  magma_duke: uniqueBoss('magma_duke', 'Magma Duke', 'Furnace Heart', false, 1080, 34, 36, 'Ashen depths', [
+    { item: 'obsidian', guaranteedCount: 8, bonusChance: 0.6, bonusCount: 4 },
+    { item: 'gold_bar', guaranteedCount: 2, bonusChance: 0.5, bonusCount: 1 },
+  ]),
+  crystal_oracle: uniqueBoss('crystal_oracle', 'Crystal Oracle', 'Lattice Mind', true, 920, 22, 54, 'Crystal depths', [
+    { item: 'aether_crystal', guaranteedCount: 4, bonusChance: 0.8, bonusCount: 2 },
+    { item: 'tome_crystal', guaranteedCount: 1, bonusChance: 0.25, bonusCount: 0 },
+  ]),
+});
+
 /** Lookup boss by id */
 export function getBossDefinition(id: string): BossDefinition | undefined {
   return BOSS_REGISTRY[id];
 }
 
-for(const [id,boss] of Object.entries(BOSS_REGISTRY)) boss.coinReward=BOSS_REWARDS[id];
+for(const [id,boss] of Object.entries(BOSS_REGISTRY)) boss.coinReward=BOSS_REWARDS[id] ?? boss.coinReward;

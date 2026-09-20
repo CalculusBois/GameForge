@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { newWorld, DEFAULT_WORLD, initialBundle, add, count, smelt, eatFood, cookDish, derivePlayerStats, RECIPES } from './model';
+import { newWorld, DEFAULT_WORLD, initialBundle, add, count, smelt, eatFood, cookDish, derivePlayerStats, RECIPES, noteDiscovery } from './model';
 import { advanceWorld, collectFurnace, storageTransfer, harvestCrop, saleValue } from './simulation';
 import { validateBundle } from './persistence';
+import { exampleSpec } from '../creator/example';
+import { validateSpec } from '../creator/spec';
 import { readTile, editTile, baseTile } from './terrain';
 import { baseTile as legacy } from './terrain-v1';
 const fresh = () => newWorld('test', DEFAULT_WORLD);
@@ -15,7 +17,7 @@ describe('connected progression regressions', () => {
   expect(RECIPES.find(r=>r.output.id==='pickaxe_cobalt')?.ingredients.obsidian).toBeUndefined();
  });
  it('reloads a partial furnace batch without consuming inputs or producing output twice', () => {
-  let w=fresh(); add(w.inventory,'copper_ore',4); add(w.inventory,'coal',1); smelt(w,'copper_ore','coal',2,true);
+  let w=fresh(); add(w.inventory,'station_furnace',1); add(w.inventory,'copper_ore',4); add(w.inventory,'coal',1); smelt(w,'copper_ore','coal',2,true);
   for(let i=0;i<15;i++) advanceWorld(w,1000);
   w=JSON.parse(JSON.stringify(w));
   for(let i=0;i<5;i++) advanceWorld(w,1000);
@@ -34,6 +36,8 @@ describe('connected progression regressions', () => {
  it('requires a cooking station and retains ingredients on failure', () => {
   const w=fresh(); add(w.inventory,'meat_raw',1); add(w.inventory,'wood',1);
   expect(()=>cookDish(w,'cook_meat')).toThrow(/station/); expect(count(w.inventory,'meat_raw')).toBe(1);
+  expect(()=>cookDish(w,'cook_meat',true)).toThrow(/Cooking station/);
+  add(w.inventory,'station_cooking',1);
   cookDish(w,'cook_meat',true); expect(count(w.inventory,'meat_cooked')).toBe(1);
  });
  it('transfers storage stacks atomically and preserves contents across reload', () => {
@@ -47,6 +51,16 @@ describe('connected progression regressions', () => {
   for(let i=0;i<90;i++) advanceWorld(w,1000);
   expect(readTile(w,40,20)).toBe(31); harvestCrop(w,40,20);
   expect(count(w.inventory,'vegetable_raw')).toBe(2); expect(()=>harvestCrop(w,40,20)).toThrow();
+ });
+ it('persists forged bosses on the world save through serialize and reopen', () => {
+  const b=initialBundle();
+  const spec=structuredClone(exampleSpec);
+  b.worlds[b.active].creations=[{spec:validateSpec(spec),x:400,y:200,defeated:false}];
+  const restored=JSON.parse(JSON.stringify(b));
+  validateBundle(restored);
+  const saved=restored.worlds[restored.active].creations?.[0];
+  expect(saved?.spec.id).toBe(spec.id);
+  expect(saved?.spec.lifetime).toBe('world');
  });
  it('prevents gold-ore sales and individual timber rounding', () => {
   expect(saleValue('wood',1)).toBe(0); expect(saleValue('wood',20)).toBe(1);
@@ -76,6 +90,7 @@ describe('finite lava basins', () => {
 
 import { buyPart, buyPack, equipPart, packPrice, gunSkin } from './customization';
 import { MODULAR_WARDROBE } from './registry/cosmetics';
+import { gunTextureKey, heldGunTextureKey } from './itemIcons';
 import { bossSites } from './bossSites';
 describe('cosmetic transactions and encounter geometry', () => {
  it('credits owned parts and charges a pack only once, with no stat changes', () => {
@@ -85,7 +100,16 @@ describe('cosmetic transactions and encounter geometry', () => {
   buyPack(b,part.setName);expect(w.coins).toBe(coins-price);
   buyPack(b,part.setName);expect(w.coins).toBe(coins-price);
   const stats=derivePlayerStats(w);equipPart(b,part.id);gunSkin(b,'skin_desert_camo','blaster',true);
+  gunSkin(b,'skin_neon_synth','carbine',true);
   expect(derivePlayerStats(w)).toEqual(stats);expect(()=>validateBundle(b)).not.toThrow();
+  expect(gunTextureKey('blaster','skin_neon_synth')).not.toBe(gunTextureKey('blaster'));
+  expect(heldGunTextureKey('blaster')).toBe('held-gun-blaster');
+  expect(heldGunTextureKey('blaster','skin_neon_synth')).toContain('held-gun-blaster');
+ });
+ it('announces new recipes only on first discovery', () => {
+  const w=fresh();
+  expect(noteDiscovery(w,'item','copper_ore')).toMatch(/New recipes/);
+  expect(noteDiscovery(w,'item','copper_ore')).toBe('');
  });
  it('creates three distinct safe arenas away from spawn', () => {
   for(const seed of ['LUMEN-01','BASIN-02','BASIN-03']) {
@@ -94,18 +118,32 @@ describe('cosmetic transactions and encounter geometry', () => {
    for(const site of sites) { expect(Math.abs(site.x)).toBeGreaterThan(100); for(let dx=-15;dx<=15;dx++) {expect(readTile(w,site.x+dx,site.floor)).toBe(2);expect(readTile(w,site.x+dx,site.floor-2)).toBe(0);} }
   }
  });
+ it('places boss-mode shrines closer to spawn', () => {
+  const explorer=bossSites(newWorld('e',{...DEFAULT_WORLD,seed:'LUMEN-01'}).settings);
+  const boss=bossSites(newWorld('b',{...DEFAULT_WORLD,seed:'LUMEN-01',difficulty:'boss'}).settings);
+  expect(boss).toHaveLength(3);
+  expect(Math.min(...boss.map(s=>Math.abs(s.x)))).toBeLessThanOrEqual(Math.min(...explorer.map(s=>Math.abs(s.x))));
+  expect(Math.max(...boss.map(s=>Math.abs(s.x)))).toBeLessThan(140);
+ });
 });
 
-import { buySupply } from './shop';
+import { buySupply, listingKey } from './shop';
 import { SHOP_CATALOG } from './registry/economy';
 describe('supply economy', () => {
  it('charges exactly once for the listed quantity and has no direct resale profit', () => {
   for(const listing of SHOP_CATALOG) {
    const w=fresh();w.coins=100;
-   const before=count(w.inventory,listing.itemId);buySupply(w,listing.itemId,true);
+   const before=count(w.inventory,listing.itemId);buySupply(w,listingKey(listing),true);
    expect(count(w.inventory,listing.itemId)).toBe(before+listing.count);
+   for (const extra of listing.extras ?? []) expect(count(w.inventory,extra.itemId)).toBe(extra.count);
    expect(w.coins).toBe(100-listing.buyPrice);
    expect(saleValue(listing.itemId,listing.count)).toBeLessThan(listing.buyPrice);
   }
+ });
+ it('keeps coins when a décor pack cannot fit extras', () => {
+  const w=fresh();w.coins=80;
+  for(let i=0;i<w.inventory.length;i++) if(!w.inventory[i]) w.inventory[i]={id:'stone',count:99};
+  expect(()=>buySupply(w,'pack_decor',true)).toThrow(/Pack full/);
+  expect(w.coins).toBe(80);
  });
 });

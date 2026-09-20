@@ -104,7 +104,7 @@ export const RECIPES: Recipe[] = [
     id: 'tonic',
     name: 'Field tonic',
     station: 'Workbench',
-    ingredients: { herb: 2 },
+    ingredients: { herb: 10 },
     output: { id: 'tonic', count: 1 },
     tier: 0,
     craftTimeSeconds: 2,

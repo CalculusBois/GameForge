@@ -297,11 +297,22 @@ export const WEAPON_SKINS: Record<string, WeaponSkin> = {
     id: 'skin_void_core',
     name: 'Void Core Pulsar',
     description: 'Swirling abyssal purple with pulsating dark-matter fissures.',
-    price: 160,
+    price: 650,
     palette: {
       primary: '#2e0854',
       secondary: '#8e44ad',
       glow: '#c39bd3',
+    },
+  },
+  skin_lumen_regalia: {
+    id: 'skin_lumen_regalia',
+    name: 'Lumen Regalia',
+    description: 'Late-expedition gold-white plating. Appearance only.',
+    price: 900,
+    palette: {
+      primary: '#f4e4b2',
+      secondary: '#76e6c4',
+      glow: '#fff4c2',
     },
   },
 };

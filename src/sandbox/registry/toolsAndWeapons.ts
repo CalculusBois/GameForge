@@ -252,6 +252,15 @@ export const WEAPONS: Record<string, WeaponStats> = {
     type: 'magic',
     knockback: 110,
   },
+  lightsaber: {
+    cooldown: 280,
+    damage: 72,
+    speed: 0,
+    mana: 0,
+    type: 'melee',
+    range: 78,
+    knockback: 160,
+  },
 };
 
 /** Get tool profile or fallback to starter pickaxe if tool */

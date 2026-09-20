@@ -1,9 +1,9 @@
 import { validateSpec, type CreationSpec, type Projectile, type StatusSpec, type Shape } from './spec';
 export interface Point { x:number; y:number }
 export interface Actor extends Point { spec:CreationSpec; hp:number; state:string; entered:number; mode:CreationSpec['movement']['mode']; speed:number; chargeAngle:number; orbitOverride?:number; born:number; due:Map<number,number>; fired:Set<number>; contact:Map<string,number>; pending:{attack:string;due:number;remaining:number}[]; defeated:boolean }
-export interface Shot extends Point { owner:string; attack:string; p:Projectile; angle:number; born:number; origin:Point; phase:number }
+export interface Shot extends Point { owner:string; attack:string; p:Projectile; angle:number; born:number; origin:Point; phase:number; reflected?:boolean }
 export interface Meter { owner:string; spec:StatusSpec; value:number; lastHit:number; until:number; nextDamage:number }
-export interface Host { player:()=>Point; damage:(amount:number,x:number,source:string)=>boolean; safe:(p:Point,radius:number)=>boolean; spawn:(spec:CreationSpec,p:Point)=>void; remove:(id:string)=>void; move:(id:string,p:Point)=>void }
+export interface Host { player:()=>Point; damage:(amount:number,x:number,source:string)=>boolean; safe:(p:Point,radius:number)=>boolean; spawn:(spec:CreationSpec,p:Point)=>void; remove:(id:string)=>void; move:(id:string,p:Point)=>void; deflect?:(p:Point, incomingAngle:number)=>boolean }
 export function turnToward(angle:number,target:number,max:number) { const delta=Math.atan2(Math.sin(target-angle),Math.cos(target-angle));return angle+Math.max(-max,Math.min(max,delta)); }
 /** Oriented local shape test with player radius; sword hitbox follows its long blade. */
 export function touches(point:Point,center:Point,shape:Shape,angle:number,padding=12) {
@@ -20,14 +20,26 @@ export class CreationRuntime {
  actors=new Map<string,Actor>(); shots:Shot[]=[];meters:Meter[]=[];time=0;
  private host:Host;
  constructor(host:Host){this.host=host;}
- apply(value:unknown) {
+ apply(value:unknown, at?:Point) {
   const spec=validateSpec(value);
-  if(!this.actors.has(spec.id)&&this.actors.size>=8)throw Error('Session limit: 8 creations. Remove one first.');
+  if(!this.actors.has(spec.id)&&this.actors.size>=8)throw Error('World limit: 8 creations. Remove one first.');
   const player=this.host.player();let position:Point|undefined;
-  const extent=Math.max(30,...spec.visuals.map(c=>Math.hypot(c.x,c.y)+c.radius+Math.max(c.shape.width,c.shape.height)/2));
-  if(spec.entityType==='mechanic')position={...player};
-  else for(const dx of [spec.spawn.distance,-spec.spawn.distance,spec.spawn.distance+120,-spec.spawn.distance-120]){
-   for(const dy of [-100,-200,-300,0]){const p={x:player.x+dx,y:player.y+dy};if(Math.hypot(dx,dy)>extent+100&&this.host.safe(p,extent)){position=p;break;}}if(position)break;
+  const extent=Math.min(72,Math.max(30,...spec.visuals.map(c=>Math.hypot(c.x,c.y)+Math.min(c.radius,56)+Math.min(36,Math.max(c.shape.width,c.shape.height)/2))));
+  if(spec.entityType==='mechanic')position=at??{...player};
+  else {
+   if(at&&this.host.safe(at,extent))position=at;
+   const origin=at??player;
+   const distances=[spec.spawn.distance,spec.spawn.distance+160,spec.spawn.distance+280,spec.spawn.distance+420,spec.spawn.distance+560,720,880];
+   for(const dist of distances){
+    if(position)break;
+    for(const dx of [dist,-dist]){
+     for(const dy of [-80,-160,-240,-320,0,80,160]){
+      const p={x:origin.x+dx,y:origin.y+dy};
+      if(Math.hypot(dx,dy)>extent+80&&this.host.safe(p,extent)){position=p;break;}
+     }
+     if(position)break;
+    }
+   }
   }
   if(!position)throw Error('No safe encounter space nearby. Move to an open area and retry; previous creation retained.');
   // Host prepares rendering/physics before replacing existing ownership. It must be atomic.
@@ -79,17 +91,38 @@ export class CreationRuntime {
     for(let i=0;i<def.count&&this.shots.length<96;i++){const angle=Math.atan2(player.y-a.y,player.x-a.x)+(i-(def.count-1)/2)*(def.count>1?def.spread/(def.count-1):0);this.shots.push({x:a.x,y:a.y,origin:{x:a.x,y:a.y},owner:a.spec.id,attack:attack.id,p:def,angle,born:this.time,phase:i*Math.PI*2/def.count});}
     p.remaining--;p.due=this.time+def.burstInterval;
    }a.pending=a.pending.filter(p=>p.remaining>0);
-   a.spec.visuals.forEach((c,i)=>{if(!c.damage)return;for(let n=0;n<c.count;n++){const p=componentPose(a,i,n,this.time);if(touches(player,p,c.shape,p.angle))this.touch(a,c.id,c.damage,c.cooldown,p.x,'generated-contact');}});
+   a.spec.visuals.forEach((c,i)=>{if(!c.damage)return;const hit={...c.shape,width:Math.min(36,c.shape.width),height:Math.min(40,c.shape.height)};for(let n=0;n<c.count;n++){const p=componentPose(a,i,n,this.time);if(touches(player,p,hit,p.angle))this.touch(a,c.id,c.damage,c.cooldown,p.x,'generated-contact');}});
   }
   this.shots=this.shots.filter(s=>{
    if(this.time-s.born>s.p.lifetime)return false;
-   s.angle=turnToward(s.angle,Math.atan2(player.y-s.y,player.x-s.x),s.p.turnRate*dt/1000);
+   if(!s.reflected)s.angle=turnToward(s.angle,Math.atan2(player.y-s.y,player.x-s.x),s.p.turnRate*dt/1000);
    const prev={x:s.x,y:s.y};
    if(s.p.orbitRadius){const a=this.actors.get(s.owner);if(!a||a.defeated)return false;const phase=s.phase+(this.time-s.born)/1000*s.p.orbitSpeed;s.x=a.x+Math.cos(phase)*s.p.orbitRadius;s.y=a.y+Math.sin(phase)*s.p.orbitRadius;s.angle=Math.atan2(s.y-prev.y,s.x-prev.x);}
    else {s.x+=Math.cos(s.angle)*s.p.speed*dt/1000;s.y+=Math.sin(s.angle)*s.p.speed*dt/1000;}
    // Substeps avoid tunnelling at low framerates.
    const steps=Math.max(1,Math.ceil(Math.hypot(s.x-prev.x,s.y-prev.y)/6));
-   for(let i=1;i<=steps;i++){const p={x:prev.x+(s.x-prev.x)*i/steps,y:prev.y+(s.y-prev.y)*i/steps};if(!this.host.safe(p,3))return false;if(touches(player,p,s.p.shape,s.angle+Math.PI/2)){if(this.host.damage(s.p.damage,s.x,s.attack))this.buildup(s.attack,s.owner,s.p.status);return false;}}
+   for(let i=1;i<=steps;i++){
+    const p={x:prev.x+(s.x-prev.x)*i/steps,y:prev.y+(s.y-prev.y)*i/steps};
+    if(!this.host.safe(p,3))return false;
+    if(!s.reflected && touches(player,p,s.p.shape,s.angle+Math.PI/2)){
+     if(this.host.deflect?.(p,s.angle)){
+      s.reflected=true;
+      s.p={...s.p,turnRate:0,orbitRadius:0};
+      s.angle+=Math.PI;
+      s.x=p.x+Math.cos(s.angle)*18;
+      s.y=p.y+Math.sin(s.angle)*18;
+      return true;
+     }
+     if(this.host.damage(s.p.damage,s.x,s.attack))this.buildup(s.attack,s.owner,s.p.status);
+     return false;
+    }
+    if(s.reflected){
+     for(const a of this.actors.values()){
+      if(a.defeated)continue;
+      if(Math.hypot(a.x-p.x,a.y-p.y)<28){this.hit(a.spec.id,s.p.damage);return false;}
+     }
+    }
+   }
    return true;
   });
   for(const m of this.meters){if(this.time-m.lastHit>m.spec.decayDelay)m.value=Math.max(0,m.value-m.spec.decayRate*dt/1000);if(m.until>this.time&&this.time>=m.nextDamage){this.host.damage(m.spec.damage,player.x,'status');m.nextDamage=this.time+m.spec.damageInterval;}if(m.until<=this.time)m.until=0;}

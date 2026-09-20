@@ -2,7 +2,7 @@ import type { CreationSpec, Shape } from './spec';
 export const crystal: Shape = {kind:'polygon',color:'#a0dfff',accent:'#ffcb70',width:50,height:70,points:[[0,-1],[.5,0],[0,1],[-.5,0]]};
 /** Documentation sample only; runtime never dispatches on a prompt or example name. */
 export const exampleSpec: CreationSpec = {
- version:1,id:'prism-guardian',name:'Prism Guardian',entityType:'boss',lifetime:'session',summary:'A hovering crystal with orbiting shards, telegraphed volleys and an enraged pursuit phase.',
+ version:1,id:'prism-guardian',name:'Prism Guardian',entityType:'boss',lifetime:'world',summary:'A hovering crystal with orbiting shards, telegraphed volleys and an enraged pursuit phase.',
  requirements:[{text:'Orbiting crystal guardian with volleys and two phases',supported:true,evidence:['visuals','attacks','graph'],limitation:''}],
  visuals:[{id:'core',shape:crystal,count:1,radius:0,orbitSpeed:0,spin:.2,x:0,y:0,damage:0,cooldown:1000},{id:'shards',shape:{...crystal,width:16,height:30},count:4,radius:70,orbitSpeed:1.5,spin:1,x:0,y:0,damage:8,cooldown:1000}],
  movement:{mode:'hover',speed:65,distance:180},stats:{health:350,contactDamage:10,contactCooldown:1000},
