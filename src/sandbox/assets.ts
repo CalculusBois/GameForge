@@ -59,6 +59,14 @@ export function sandboxAssets(scene: Phaser.Scene) {
     tex('gunner', 36, 46, g => { g.fillStyle(0xb49a72); g.fillRect(8, 8, 23, 22); g.fillRect(9, 31, 7, 14); g.fillRect(24, 31, 7, 14); g.fillStyle(0x485664); g.fillRect(10, 0, 20, 13); g.fillRect(0, 17, 26, 6); g.fillStyle(0xfa8a7e); g.fillRect(12, 5, 12, 3); });
     tex('caster', 40, 48, g => { g.fillStyle(0x8465b1); g.fillTriangle(20, 4, 3, 45, 37, 45); g.fillStyle(0xbad8e8); g.fillRect(13, 10, 14, 10); g.fillStyle(0x1d2547); g.fillRect(15, 13, 10, 4); g.fillStyle(0xe1abff); g.fillRect(34, 10, 3, 34); g.fillTriangle(35, 0, 29, 10, 40, 10); });
     tex('sentinel', 46, 52, g => { g.fillStyle(0x65788b); g.fillRect(7, 9, 32, 30); g.fillRect(0, 14, 10, 25); g.fillRect(36, 14, 10, 25); g.fillRect(8, 37, 12, 14); g.fillRect(28, 37, 12, 14); g.fillStyle(0xc8a584); g.fillRect(10, 0, 27, 14); g.fillStyle(0xffa87d); g.fillRect(15, 5, 18, 4); });
+    tex('bomber', 40, 44, g => {
+        g.fillStyle(0x5a3a2e); g.fillEllipse(20, 26, 30, 26);
+        g.fillStyle(0xc45a3a); g.fillEllipse(20, 22, 22, 20);
+        g.fillStyle(0xffc978); g.fillCircle(20, 20, 6);
+        g.fillStyle(0x2a1c18); g.fillRect(12, 16, 4, 4); g.fillRect(24, 16, 4, 4);
+        g.fillStyle(0x8a6a40); g.fillRect(18, 2, 4, 10);
+        g.fillStyle(0xff6b4a); g.fillCircle(20, 2, 4);
+    });
     tex('magic', 18, 18, g => { g.fillStyle(0x9b89ff); g.fillCircle(9, 9, 9); g.fillStyle(0xf5dcff); g.fillTriangle(9, 1, 14, 10, 3, 12); });
     tex('pick-tool', 32, 32, g => { g.lineStyle(4, 0xb9a180); g.lineBetween(3, 28, 24, 5); g.lineStyle(5, 0xb6d1de); g.lineBetween(10, 2, 29, 12); });
     tex('sword-tool', 38, 14, g => { g.fillStyle(0xc4ffff); g.fillTriangle(8, 2, 38, 7, 8, 12); g.fillStyle(0xb09773); g.fillRect(0, 5, 11, 4); g.fillRect(8, 0, 3, 14); });
