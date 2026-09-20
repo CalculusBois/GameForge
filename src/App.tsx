@@ -1,3 +1,5 @@
+import { CreatorPanel } from './creator/CreatorPanel';
+import type { CreationSpec } from './creator/spec';
 import { SHOP_CATALOG } from './sandbox/registry/economy';
 import { buySupply } from './sandbox/shop';
 import { bossSites } from './sandbox/bossSites';
@@ -8,8 +10,8 @@ import { collectFurnace, storageTransfer, sortPack, quickStack, saleValue, sellR
 import { FOOD_PROFILES, COOKING_RECIPES, cookDish } from './sandbox/model';
 import { useEffect, useRef, useState } from 'react';
 import { SaveStore } from './sandbox/persistence';
-import { startSandbox, type SandboxController, type SandboxHud, type Menu } from './sandbox/engine';
-import { DEFAULT_WORLD, ITEMS, RECIPES, SMELTING_RECIPES, SMELTING_FUELS, SKINS, OBJECTIVES, CHUNK, TILE, add, remove, count, craft, smelt, unlock, claim, newWorld, equipItem, unequipItem, useVitalityCore, useManaCore, derivePlayerStats, type ItemId, type SkinId, type WorldSettings } from './sandbox/model';
+import { startSandbox, type PlayerSessionSnapshot, type SandboxController, type SandboxHud, type Menu } from './sandbox/engine';
+import { DEFAULT_WORLD, validateSettings, ITEMS, RECIPES, SMELTING_RECIPES, SMELTING_FUELS, SKINS, OBJECTIVES, CHUNK, TILE, add, remove, count, craft, smelt, unlock, claim, newWorld, equipItem, unequipItem, useVitalityCore, useManaCore, derivePlayerStats, type ItemId, type SkinId, type WorldSettings } from './sandbox/model';
 import { itemIconUrl } from './sandbox/itemIcons';
 import { landmarks } from './sandbox/terrain';
 import { gameAudio } from './sandbox/audio';
@@ -35,6 +37,10 @@ const EMPTY: SandboxHud = { health: 100, maxHealth: 100, mana: 100, maxMana: 100
 export default function App() {
     const [store, setStore] = useState<SaveStore | null>(null), [revision, setRevision] = useState(0), [hud, setHud] = useState(EMPTY), [menu, setMenu] = useState<Menu>(null), [error, setError] = useState(''), [notice, setNotice] = useState(''), [pending, setPending] = useState(false), [slot, setSlot] = useState<number | null>(null), [settings, setSettings] = useState<WorldSettings>({ ...DEFAULT_WORLD }), [sellId, setSellId] = useState<ItemId>('stone'), [quantity, setQuantity] = useState(1), [debug, setDebug] = useState(false), [shake, setShake] = useState(true), [aiPrompt, setAiPrompt] = useState('');
     const [craftTab, setCraftTab] = useState<'all' | 'workbench' | 'forge' | 'smelting' | 'cooking'>('all');
+    const beforeAIPlayer=useRef<PlayerSessionSnapshot|undefined>(undefined);
+    const restorePlayer=useRef<PlayerSessionSnapshot|undefined>(undefined);
+    const [creations,setCreations]=useState<CreationSpec[]>([]);
+    const [sessionRevision,setSessionRevision]=useState(0);
     const [volume,setVolume]=useState(.35);
     const [gunFamily, setGunFamily] = useState<string>('blaster');
     const [recipeSearch, setRecipeSearch] = useState('');
@@ -47,7 +53,7 @@ export default function App() {
     const [hudMenuOpen, setHudMenuOpen] = useState(false);
     const [showTutorial, setShowTutorial] = useState(false);
     const [cmdToast, setCmdToast] = useState<{ text: string; kind: 'health' | 'mana' | 'hunger' | 'info' } | null>(null);
-    const [parleyStatus, setParleyStatus] = useState<{ ok: boolean; hasKey: boolean; model?: string; baseUrl?: string } | null>(null);
+
     const [deleteTarget, setDeleteTarget] = useState('');
     const host = useRef<HTMLDivElement>(null), frame = useRef<HTMLDivElement>(null), engine = useRef<SandboxController | null>(null), dialog = useRef<HTMLElement | null>(null);
     useEffect(() => { let alive = true; opening ??= SaveStore.open(); void opening.then(s => { if (alive)
@@ -67,20 +73,15 @@ export default function App() {
             } else {
                 setMenu(m);
             }
-        } });
+        } }, undefined, restorePlayer.current);
+        restorePlayer.current=undefined;
     }
     catch (e) {
         setError(String(e));
-    } return () => { alive = false; engine.current?.destroy(); engine.current = null; }; }, [store, active, gameState]);
+    } return () => { alive = false; engine.current?.destroy(); engine.current = null; }; }, [store, active, gameState, sessionRevision]);
     useEffect(() => { engine.current?.setShake(shake); engine.current?.setVolume(volume); gameAudio.setVolume(volume); }, [shake, volume, active, gameState]);
     useEffect(() => { if (menu)
         dialog.current?.focus(); }, [menu]);
-    useEffect(() => {
-        if (menu !== 'forge') return;
-        let alive = true;
-        void fetch('/api/parley/health').then(r => r.json()).then(d => { if (alive) setParleyStatus(d); }).catch(() => { if (alive) setParleyStatus({ ok: false, hasKey: false }); });
-        return () => { alive = false; };
-    }, [menu]);
     void revision;
     const open = (m: Menu, opts?: { craftTab?: typeof craftTab }) => { engine.current?.pause(); gameAudio.stopBgm(); setMenu(m); setSlot(null); setNotice(''); if (m === 'crafting' && opts?.craftTab) setCraftTab(opts.craftTab); };
     const act = async (fn: () => Promise<unknown>) => { if (pending)
@@ -96,12 +97,27 @@ export default function App() {
     finally {
         setPending(false);
     } };
+    const enterAI = async () => {
+        if(!store||store.aiSession)return;
+        await engine.current?.save();
+        beforeAIPlayer.current=engine.current?.capturePlayer();
+        await store.beginAISession();
+    };
+    const exitAI = async () => {
+        engine.current?.pause();
+        await engine.current?.save();
+        engine.current?.destroy(); engine.current=null;
+        await store?.exitAISession();
+        restorePlayer.current=beforeAIPlayer.current;beforeAIPlayer.current=undefined;
+        setCreations([]);setSessionRevision(v=>v+1);setNotice('AI session exited. Pre-session progress restored.');
+    };
     const resumeGame = () => { gameAudio.unlock(); gameAudio.startBgm(); engine.current?.resume(); };
     const close = () => { setMenu(null); setSlot(null); resumeGame(); };
     /** Leave the run and open the worlds / creation screen. */
     const goToWorlds = () => {
         void act(async () => {
             await engine.current?.save().catch(() => undefined);
+            if(store?.aiSession)await exitAI();
             gameAudio.stopBgm();
             setMenu(null);
             setShowSearch(false);
@@ -314,7 +330,7 @@ export default function App() {
         <section className="worlds-create-panel"><h2>Create a new world</h2><div className="generation-form"><label>Seed<input value={settings.seed} maxLength={80} onChange={e => setSettings({ ...settings, seed: e.target.value })} placeholder="LUMEN-01"/><button type="button" className="seed-roll" disabled={pending} onClick={() => setSettings({ ...settings, seed: `WORLD-${Math.random().toString(36).slice(2, 8).toUpperCase()}` })}>Random</button></label><label>Difficulty<select value={settings.difficulty} onChange={e => setSettings({ ...settings, difficulty: e.target.value as WorldSettings['difficulty'] })}><option value="explorer">Explorer</option><option value="standard">Standard</option><option value="extreme">EXTREME</option></select></label>{(['roughness', 'caves', 'abundance'] as const).map(key => <label key={key}>{key}<input type="range" min="0.6" max="1.4" step="0.1" value={settings[key]} onChange={e => setSettings({ ...settings, [key]: Number(e.target.value) })}/></label>)}</div><button type="button" className="primary" disabled={pending} onClick={() => void createAndEnterWorld()}>Create & start expedition →</button>
         {worldsList.length > 0 && <div className="world-delete-panel"><h3>Delete a world</h3><p>You can delete every world.</p><select value={deleteTarget} onChange={e => setDeleteTarget(e.target.value)}><option value="">Select a world…</option>{worldsList.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select><button className="danger" disabled={pending || !deleteTarget} onClick={() => { const selected = store.data.worlds[deleteTarget]; if (selected && confirm(`Delete world “${selected.name}”? This cannot be undone.`)) void deleteWorld(deleteTarget); }}>Delete selected</button></div>}</section>{notice && <p role="status">{notice}</p>}</main>;
     return <main className="sandbox-app"><header className="sandbox-header"><div className="brand">GAME<span>FORGE</span><small>LUMEN FRONTIER · A WORLD TO DISCOVER</small></div><div className="header-right"><span className="ai-status" style={{ color: '#76e6c4' }}>✦ MIT Parley AI</span><button type="button" onClick={() => open('forge')} style={{ background: '#1d3557', color: '#76e6c4', borderColor: '#76e6c4', fontWeight: 'bold' }}>✦ MIT Parley Forge</button><button type="button" onClick={goToWorlds} disabled={pending}>Worlds & creation</button></div></header>
- <section className="world-shell" ref={frame}><div className="world-hud" style={hud.status !== 'playing' && !menu && !showSearch && !showTutorial ? { pointerEvents: 'none' } : undefined}><div className="hud-menu-container"><button type="button" className="hud-menu-btn" aria-label="Expedition menu" aria-expanded={hudMenuOpen} aria-haspopup="menu" onPointerDown={e => e.preventDefault()} onClick={() => setHudMenuOpen(v => !v)}>⋮</button>{hudMenuOpen && <div className="hud-dropdown" role="menu" onPointerDown={e => e.stopPropagation()}><button type="button" role="menuitem" onPointerDown={e => e.preventDefault()} onClick={() => { setHudMenuOpen(false); setMenu(null); setShowSearch(false); engine.current?.pause(); gameAudio.stopBgm(); setShowTutorial(true); }}>How to Play</button><button type="button" role="menuitem" onPointerDown={e => e.preventDefault()} onClick={() => { setHudMenuOpen(false); setMenu(null); setShowSearch(false); resumeGame(); }}>Continue Expedition</button><button type="button" role="menuitem" onPointerDown={e => e.preventDefault()} onClick={() => { setHudMenuOpen(false); void engine.current?.save().finally(() => { gameAudio.stopBgm(); setGameState('home'); }); }}>Quit Expedition</button></div>}</div><div className={`vital${cmdToast?.kind === 'health' ? ' vital-flash' : ''}`}><span>HEALTH <b>{hud.health}/{hud.maxHealth || 100}</b></span><meter min="0" max={Math.max(hud.maxHealth || 100, hud.health)} value={hud.health}/></div><div className={`vital mana${cmdToast?.kind === 'mana' ? ' vital-flash' : ''}`}><span>MANA <b>{hud.mana}/{hud.maxMana || 100}</b></span><meter min="0" max={hud.maxMana || 100} value={hud.mana}/></div><div className={`vital${cmdToast?.kind === 'hunger' ? ' vital-flash' : ''}`}><span>HUNGER <b>{Math.ceil(hud.hunger)}/100</b></span><meter min="0" max="100" value={hud.hunger}/></div>{cmdToast && <div className={`cmd-toast cmd-toast-${cmdToast.kind}`} role="status">{cmdToast.text}</div>}{hud.defense > 0 && <div className="vital" style={{ minWidth: 'auto', padding: '0 8px' }}><span style={{ color: '#8dd8f3' }}>DEF <b>+{hud.defense}</b></span></div>}{hud.activeEffects && hud.activeEffects.length > 0 && <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>{hud.activeEffects.map((eff, i) => <span key={i} title={`${eff.name} (${Math.ceil(eff.remainingMs / 1000)}s)`} style={{ background: '#1c2833', border: '1px solid #4a6572', borderRadius: '4px', padding: '1px 5px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '2px' }}><span>{eff.icon}</span><span style={{ fontSize: '9px', color: '#c0d6df' }}>{eff.remainingMs > 60000 ? '∞' : `${Math.ceil(eff.remainingMs / 1000)}s`}</span></span>)}</div>}<div className="location"><strong>{hud.biome}</strong><small>{world.name} · {Math.floor(hud.y / TILE)}m depth</small></div><div className="coins">◈ {world.coins}<small>COINS</small></div><button type="button" className="hud-search-btn" aria-label="Search" title="Search" onPointerDown={e => e.preventDefault()} onClick={() => { setHudMenuOpen(false); engine.current?.pause(); gameAudio.stopBgm(); setShowSearch(true); }}>⌕</button><button type="button" onPointerDown={e => e.preventDefault()} onClick={() => { if (hud.status === 'paused' && !menu)
+ <section className="world-shell" ref={frame}>{store.aiSession&&<div className="ai-session-banner">AI SESSION · All progress temporary <button onClick={()=>void exitAI()}>Exit & restore save</button></div>}{hud.aiMeters?.map(m=><div className="ai-meter" key={m.id} style={{borderColor:m.color}}><span>{m.icon} {m.label} {m.remaining>0?`· ${Math.ceil(m.remaining/1000)}s`:""}</span><meter min={0} max={m.maximum} value={m.value} style={{accentColor:m.color}}/></div>)}<div className="world-hud" style={hud.status !== 'playing' && !menu && !showSearch && !showTutorial ? { pointerEvents: 'none' } : undefined}><div className="hud-menu-container"><button type="button" className="hud-menu-btn" aria-label="Expedition menu" aria-expanded={hudMenuOpen} aria-haspopup="menu" onPointerDown={e => e.preventDefault()} onClick={() => setHudMenuOpen(v => !v)}>⋮</button>{hudMenuOpen && <div className="hud-dropdown" role="menu" onPointerDown={e => e.stopPropagation()}><button type="button" role="menuitem" onPointerDown={e => e.preventDefault()} onClick={() => { setHudMenuOpen(false); setMenu(null); setShowSearch(false); engine.current?.pause(); gameAudio.stopBgm(); setShowTutorial(true); }}>How to Play</button><button type="button" role="menuitem" onPointerDown={e => e.preventDefault()} onClick={() => { setHudMenuOpen(false); setMenu(null); setShowSearch(false); resumeGame(); }}>Continue Expedition</button><button type="button" role="menuitem" onPointerDown={e => e.preventDefault()} onClick={() => { setHudMenuOpen(false); void (store.aiSession ? exitAI() : (engine.current?.save() ?? Promise.resolve())).finally(() => { gameAudio.stopBgm(); setGameState('home'); }); }}>Quit Expedition</button></div>}</div><div className={`vital${cmdToast?.kind === 'health' ? ' vital-flash' : ''}`}><span>HEALTH <b>{hud.health}/{hud.maxHealth || 100}</b></span><meter min="0" max={Math.max(hud.maxHealth || 100, hud.health)} value={hud.health}/></div><div className={`vital mana${cmdToast?.kind === 'mana' ? ' vital-flash' : ''}`}><span>MANA <b>{hud.mana}/{hud.maxMana || 100}</b></span><meter min="0" max={hud.maxMana || 100} value={hud.mana}/></div><div className={`vital${cmdToast?.kind === 'hunger' ? ' vital-flash' : ''}`}><span>HUNGER <b>{Math.ceil(hud.hunger)}/100</b></span><meter min="0" max="100" value={hud.hunger}/></div>{cmdToast && <div className={`cmd-toast cmd-toast-${cmdToast.kind}`} role="status">{cmdToast.text}</div>}{hud.defense > 0 && <div className="vital" style={{ minWidth: 'auto', padding: '0 8px' }}><span style={{ color: '#8dd8f3' }}>DEF <b>+{hud.defense}</b></span></div>}{hud.activeEffects && hud.activeEffects.length > 0 && <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>{hud.activeEffects.map((eff, i) => <span key={i} title={`${eff.name} (${Math.ceil(eff.remainingMs / 1000)}s)`} style={{ background: '#1c2833', border: '1px solid #4a6572', borderRadius: '4px', padding: '1px 5px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '2px' }}><span>{eff.icon}</span><span style={{ fontSize: '9px', color: '#c0d6df' }}>{eff.remainingMs > 60000 ? '∞' : `${Math.ceil(eff.remainingMs / 1000)}s`}</span></span>)}</div>}<div className="location"><strong>{hud.biome}</strong><small>{world.name} · {Math.floor(hud.y / TILE)}m depth</small></div><div className="coins">◈ {world.coins}<small>COINS</small></div><button type="button" className="hud-search-btn" aria-label="Search" title="Search" onPointerDown={e => e.preventDefault()} onClick={() => { setHudMenuOpen(false); engine.current?.pause(); gameAudio.stopBgm(); setShowSearch(true); }}>⌕</button><button type="button" onPointerDown={e => e.preventDefault()} onClick={() => { if (hud.status === 'paused' && !menu)
         resumeGame();
     else {
         engine.current?.pause();
@@ -355,7 +371,7 @@ export default function App() {
                 <small style={{ fontSize: '9px', color: '#88aab8', fontWeight: 600 }}>{slotLabel}</small>
                 {itemDef ? (
                   <>
-                    <ItemIcon id={eqItem} />
+                    <ItemIcon id={eqItem!} />
                     <span style={{ fontSize: '10px', fontWeight: 600, color: '#eef6f8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '50px' }}>{itemDef.name}</span>
                     <button style={{ padding: '2px 4px', fontSize: '9px', marginTop: '2px', background: '#253d4e', border: '1px solid #4a6c82' }} disabled={pending} onClick={() => void transact((_b, w) => unequipItem(w, s))}>Unequip</button>
                   </>
@@ -466,87 +482,11 @@ export default function App() {
         } return total ? `Collected ${total} held resources` : 'No held resources, or your inventory is still full.'; })}>Collect held resources ({Object.values(world.pendingLoot ?? {}).reduce((n, v) => n + (v ?? 0), 0)})</button><div className="sell-form"><label>Resource<select value={sellId} onChange={e => setSellId(e.target.value as ItemId)}>{(Object.keys(ITEMS) as ItemId[]).filter(id => saleValue(id,40)>0).map(id => <option value={id} key={id}>{ITEMS[id].name} · {count(world.inventory, id)} in pack</option>)}</select></label><label>Quantity<input type="number" min="1" max="999" value={quantity} onChange={e => setQuantity(Number(e.target.value))}/></label><p>{quantity} × {ITEMS[sellId].value} = <strong>{saleValue(sellId,quantity)} coins</strong></p><button className="primary" disabled={!hud.nearBase || pending || !Number.isInteger(quantity) || quantity < 1 || count(world.inventory, sellId) < quantity} onClick={() => void transact((_b, w) => { if (!hud.nearBase) throw new Error('Return to the outpost.'); return sellResource(w,sellId,quantity); })}>Sell {quantity} for {saleValue(sellId,quantity)} coins</button></div></>}
  {menu === 'map' && <div>{bossSites(world.settings).filter(s=>world.discoveredBosses?.includes(s.id)).map(s=><p key={s.id}>◆ {BOSS_REGISTRY[s.id].name}: {s.x}, {s.floor} {world.defeated.includes(`boss:${s.id}`)?'— defeated':'— press E at shrine'}</p>)}</div>}
  {menu === 'map' && <><p>Only surveyed chunks are shown. ◈ marks discovered caches; ● marks the outpost. Use Recall to return safely.</p><svg viewBox="0 0 620 300" className="survey-map" role="img" aria-label="Explored terrain map">{Object.entries(world.explored).slice(-1000).map(([key, b]) => { const [x, y] = key.split(',').map(Number), cx = Math.floor(hud.x / (CHUNK * TILE)); return <g key={key}><rect x={300 + (x - cx) * 22} y={y * 45 + 20} width="21" height="44" fill={b === 'Crystal depths' ? '#706195' : b === 'Rust wastes' ? '#9e7660' : '#608b79'}/>{landmarks(world.settings, x).some(l => Math.floor(l.y / CHUNK) === y) && <text x={305 + (x - cx) * 22} y={y * 45 + 42} fill="#f5d08f" fontSize="10">◈</text>}{x === 0 && y === 0 && <text x={305 + (x - cx) * 22} y="38" fill="#fff">●</text>}</g>; })}<circle cx={311} cy={Math.floor(hud.y / (CHUNK * TILE)) * 45 + 42} r="4" fill="#fff"/></svg><button onClick={() => { setMenu(null); engine.current?.recall(); }}>Recall to outpost · 2.5 seconds</button></>}
- {menu === 'worlds' && <><p>Worlds store their own items, coins, objectives, and terrain changes. Skins are shared. Saves live in this browser only; they are not cloud-synced.</p><div className="world-list">{Object.values(store.data.worlds).map(w => <button key={w.id} disabled={w.id === active || pending} onClick={() => void act(async () => { await engine.current?.save(); await store.transact(b => { b.active = w.id; }); setMenu(null); })}>{w.name} {w.id === active ? '· Current' : '· Load world'}</button>)}</div><div className="world-delete-panel in-menu"><h3>Delete a world</h3><p>You can delete every world. Deleting the last returns to world select.</p><select value={deleteTarget} onChange={e => setDeleteTarget(e.target.value)}><option value="">Select a world…</option>{Object.values(store.data.worlds).map(w => <option key={w.id} value={w.id}>{w.name}{w.id === active ? ' (current)' : ''}</option>)}</select><button className="danger" disabled={pending || !deleteTarget} onClick={() => { const selected = store.data.worlds[deleteTarget]; if (selected && confirm(`Delete world “${selected.name}”? This cannot be undone.`)) void deleteWorld(deleteTarget); }}>Delete selected</button></div><details><summary>Create a new world · existing worlds are kept</summary><div className="generation-form"><label>Seed<input value={settings.seed} maxLength={80} onChange={e => setSettings({ ...settings, seed: e.target.value })}/></label><label>Difficulty<select value={settings.difficulty} onChange={e => setSettings({ ...settings, difficulty: e.target.value as WorldSettings['difficulty'] })}><option value="explorer">Explorer</option><option value="standard">Standard</option><option value="extreme">EXTREME</option></select></label>{(['roughness', 'caves', 'abundance'] as const).map(key => <label key={key}>{key}<input type="range" min="0.6" max="1.4" step="0.1" value={settings[key]} onChange={e => setSettings({ ...settings, [key]: Number(e.target.value) })}/></label>)}<button type="button" className="primary" disabled={pending} onClick={() => void createAndEnterWorld()}>Create new world</button></div></details><p>Terrain settings are fixed once a world is created. New terrain settings require a new world.</p><details open><summary>✦ AI World Creation · MIT Parley AI</summary><div className="generation-form" style={{ gridTemplateColumns: '1fr', marginTop: '10px' }}><label>Describe game world, terrain, or difficulty:<textarea value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} placeholder="e.g. Higher mountain peaks, cavernous cave network, standard difficulty, abundant crystals..." rows={3} disabled={pending}/></label><button className="primary" disabled={pending || !aiPrompt.trim()} onClick={() => void act(async () => { setNotice('Requesting world generation from MIT Parley API…'); const res = await fetch('/api/edit-game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: aiPrompt, currentState: world.settings, gameType: 'sandbox' }) }); const result = await res.json(); if (!result.ok) throw new Error(result.error || 'Parley API request failed.'); if (result.data) { const newSettings = result.data as WorldSettings; setSettings(newSettings); await engine.current?.save(); await store.transact(b => { const w = newWorld(crypto.randomUUID(), newSettings); b.worlds[w.id] = w; b.active = w.id; }); setAiPrompt(''); setMenu(null); return result.message || 'New world created from Parley AI specifications.'; } })}>Generate world with Parley AI →</button><small style={{ color: '#8aa6b1' }}>Backend routes to MIT Parley API using Bearer PARLEY_API_KEY and bounded engine validation.</small></div></details><div className="save-actions"><button onClick={() => void act(async () => { await engine.current?.save(); const url = URL.createObjectURL(new Blob([store.export()], { type: 'application/json' })); const a = document.createElement('a'); a.href = url; a.download = 'gameforge-worlds.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); return 'Save file exported'; })}>Export all local saves</button><label className="import-label">Import save file<input type="file" accept="application/json" onChange={e => { const f = e.target.files?.[0]; if (f)
+ {menu === 'worlds' && <><p>Worlds store their own items, coins, objectives, and terrain changes. Skins are shared. Saves live in this browser only; they are not cloud-synced.</p><div className="world-list">{Object.values(store.data.worlds).map(w => <button key={w.id} disabled={w.id === active || pending} onClick={() => void act(async () => { await engine.current?.save(); await store.transact(b => { b.active = w.id; }); setMenu(null); })}>{w.name} {w.id === active ? '· Current' : '· Load world'}</button>)}</div><div className="world-delete-panel in-menu"><h3>Delete a world</h3><p>You can delete every world. Deleting the last returns to world select.</p><select value={deleteTarget} onChange={e => setDeleteTarget(e.target.value)}><option value="">Select a world…</option>{Object.values(store.data.worlds).map(w => <option key={w.id} value={w.id}>{w.name}{w.id === active ? ' (current)' : ''}</option>)}</select><button className="danger" disabled={pending || !deleteTarget} onClick={() => { const selected = store.data.worlds[deleteTarget]; if (selected && confirm(`Delete world “${selected.name}”? This cannot be undone.`)) void deleteWorld(deleteTarget); }}>Delete selected</button></div><details><summary>Create a new world · existing worlds are kept</summary><div className="generation-form"><label>Seed<input value={settings.seed} maxLength={80} onChange={e => setSettings({ ...settings, seed: e.target.value })}/></label><label>Difficulty<select value={settings.difficulty} onChange={e => setSettings({ ...settings, difficulty: e.target.value as WorldSettings['difficulty'] })}><option value="explorer">Explorer</option><option value="standard">Standard</option><option value="extreme">EXTREME</option></select></label>{(['roughness', 'caves', 'abundance'] as const).map(key => <label key={key}>{key}<input type="range" min="0.6" max="1.4" step="0.1" value={settings[key]} onChange={e => setSettings({ ...settings, [key]: Number(e.target.value) })}/></label>)}<button type="button" className="primary" disabled={pending} onClick={() => void createAndEnterWorld()}>Create new world</button></div></details><p>Terrain settings are fixed once a world is created. New terrain settings require a new world.</p><details open><summary>✦ AI World Creation · MIT Parley AI</summary><div className="generation-form" style={{ gridTemplateColumns: '1fr', marginTop: '10px' }}><label>Describe game world, terrain, or difficulty:<textarea value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} placeholder="e.g. Higher mountain peaks, cavernous cave network, standard difficulty, abundant crystals..." rows={3} disabled={pending}/></label><button className="primary" disabled={pending || !aiPrompt.trim()} onClick={() => void act(async () => { setNotice('Requesting world generation from MIT Parley API…'); const res = await fetch('/api/edit-game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: aiPrompt, currentState: world.settings, gameType: 'sandbox' }) }); const result = await res.json(); if (!result.ok) throw new Error(result.error || 'Parley API request failed.'); if (result.data) { const newSettings = result.data as WorldSettings; validateSettings(newSettings); setSettings(newSettings); await engine.current?.save(); await enterAI(); await store.transact(b => { const w = newWorld(crypto.randomUUID(), newSettings); b.worlds[w.id] = w; b.active = w.id; }); setAiPrompt(''); setMenu(null); return 'Temporary AI world created. Exit AI session to restore your previous world.'; } })}>Generate world with Parley AI →</button><small style={{ color: '#8aa6b1' }}>Backend routes to MIT Parley API using Bearer PARLEY_API_KEY and bounded engine validation.</small></div></details><div className="save-actions"><button onClick={() => void act(async () => { await engine.current?.save(); const url = URL.createObjectURL(new Blob([store.export()], { type: 'application/json' })); const a = document.createElement('a'); a.href = url; a.download = 'gameforge-worlds.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); return 'Save file exported'; })}>Export all local saves</button><label className="import-label">Import save file<input type="file" accept="application/json" onChange={e => { const f = e.target.files?.[0]; if (f)
             void act(async () => { if (f.size > 20000000)
                 throw new Error('Save file is too large.'); const imported = JSON.parse(await f.text()); await engine.current?.save(); await store.import(imported); setMenu(null); return 'Imported save'; }); }}/></label></div><p>Import merges worlds and cosmetic ownership. Existing worlds are preserved as separate copies if IDs match.</p></>}
- {menu === 'settings' && <><label>Sound volume <input type="range" aria-label="Sound volume" min="0" max="1" step="0.05" value={volume} onChange={e=>{ const v=Number(e.target.value); setVolume(v); gameAudio.unlock(); gameAudio.setVolume(v); engine.current?.setVolume(v); }}/></label><label className="check"><input type="checkbox" checked={shake} onChange={e => setShake(e.target.checked)}/>Camera shake</label>{import.meta.env.DEV && <label className="check"><input type="checkbox" checked={debug} onChange={e => setDebug(e.target.checked)}/>Show performance overlay</label>}<p>Controls: A/D or arrows move; Space jumps; J or left click attacks/mines; F or right click places; Hold E gathers trees/plants; E opens chests; Q casts Blink; R casts Shield; 1–8 selects; H recalls; I inventory; C crafting; M map; Escape pauses.</p><button onClick={() => void act(async () => { await engine.current?.save(); return 'Saved to this browser'; })}>Save now</button><details style={{ marginTop: '14px' }}><summary>✦ AI Mechanics & Style Tuning (MIT Parley)</summary><div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}><p style={{ margin: 0, fontSize: '11px', color: '#9cb5be' }}>Tune game mechanics, player camera feel, and visual settings while paused.</p><textarea value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} placeholder="e.g. Boost player movement speed, reduce camera shake, and increase weapon fire rate..." rows={2} disabled={pending}/><button className="primary" disabled={pending || !aiPrompt.trim()} onClick={() => void act(async () => { setNotice('Sending mechanics tuning request to MIT Parley API…'); const res = await fetch('/api/edit-game', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: aiPrompt, currentState: { shake, difficulty: world.settings.difficulty }, gameType: 'sandbox' }) }); const result = await res.json(); if (!result.ok) throw new Error(result.error || 'Parley API error.'); setAiPrompt(''); return result.message || 'Game mechanics successfully updated via Parley AI.'; })}>Tune mechanics with Parley AI →</button></div></details></>}
- {menu === 'forge' && <div className="forge-panel" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-  <p style={{ margin: 0 }}>Fleshes out high-level generative prompts (e.g. <em>&quot;Add a void dragon boss&quot;</em> or <em>&quot;Create a radioactive toxic biome&quot;</em>) using MIT Parley AI (<code>parley.api.mit.edu</code> · gpt-6-astra). Entities are balanced to your expedition stats, validated, written to disk, and injected into the live game loop.</p>
-  <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center', fontSize: '11px', padding: '8px 10px', borderRadius: '6px', background: parleyStatus?.ok && parleyStatus.hasKey ? '#0f2a24' : '#2a1a1a', border: `1px solid ${parleyStatus?.ok && parleyStatus.hasKey ? '#3d8f72' : '#8a4a4a'}`, color: parleyStatus?.ok && parleyStatus.hasKey ? '#76e6c4' : '#ffb4b4' }}>
-    <strong>MIT Parley AI</strong>
-    <span>{parleyStatus == null ? 'Checking connection…' : parleyStatus.ok && parleyStatus.hasKey ? `Online · ${parleyStatus.model || 'gpt-6-astra'}` : parleyStatus.ok && !parleyStatus.hasKey ? 'API reachable — set PARLEY_API_KEY in .env' : 'Offline offline — run Vite with the Parley plugin'}</span>
-  </div>
-  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', fontSize: '11px', color: '#8dd8f3', background: '#0e2433', padding: '6px 10px', borderRadius: '4px' }}>
-    <span><b>Progression Level:</b> {Math.max(1, Math.floor(world.coins / 50) + 1)}</span>
-    <span><b>Active Biome:</b> {hud.biome}</span>
-    <span><b>Depth:</b> {Math.floor(hud.y / TILE)}m</span>
-    <span><b>Vitals:</b> {hud.health} HP / {hud.mana} MP</span>
-    <span><b>Equipped Skin:</b> {profile.equipped}</span>
-  </div>
-  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-    <label style={{ fontSize: '12px', fontWeight: 600 }}>Inspiration Presets:</label>
-    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-      {[
-        'Add a menacing void dragon boss with shadow burst attacks',
-        'Create an ancient crystalline golem elite boss',
-        'Create a toxic radioactive biome with green stone walls',
-        'Forge a heavy plasma cannon that fires high-speed bolts',
-        'Tune mechanics: low gravity, double jump, high speed',
-      ].map(p => (
-        <button key={p} type="button" style={{ fontSize: '11px', padding: '4px 8px', background: '#193549', color: '#bee3f8', border: '1px solid #3182ce', borderRadius: '4px' }} onClick={() => setAiPrompt(p)}>{p.split(' ')[0]} {p.split(' ')[1]} {p.split(' ')[2]}…</button>
-      ))}
-    </div>
-  </div>
-  <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-    <span style={{ fontSize: '12px', fontWeight: 600 }}>Your Generative Prompt:</span>
-    <textarea value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} placeholder="e.g. Add a massive magma beast boss with charging attacks and 800 HP..." rows={3} disabled={pending} style={{ width: '100%', boxSizing: 'border-box' }}/>
-  </label>
-  <button className="primary" disabled={pending || !aiPrompt.trim()} onClick={() => void act(async () => {
-    setNotice('Connecting to MIT Parley AI…');
-    const playerLevel = Math.max(1, Math.floor(world.coins / 50) + 1);
-    const res = await fetch('/api/edit-game', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        prompt: aiPrompt,
-        currentState: {
-          coins: world.coins,
-          health: hud.health,
-          mana: hud.mana,
-          biome: hud.biome,
-          depth: Math.floor(hud.y / TILE),
-          level: playerLevel,
-          equippedSkin: profile.equipped,
-        },
-        context: {
-          playerLevel,
-          health: hud.health,
-          mana: hud.mana,
-          activeBiome: hud.biome,
-          depth: Math.floor(hud.y / TILE),
-          equippedSkin: profile.equipped,
-          coins: world.coins,
-          availableTemplates: {
-            enemyArchetypes: ['drone', 'hopper', 'caster', 'sentinel', 'brute'],
-            weaponCategories: ['projectile', 'beam', 'melee'],
-            biomes: ['Verdant frontier', 'Crystal depths', 'Rust wastes', 'Ashen depths'],
-          },
-        },
-        gameType: 'generative',
-      }),
-    });
-    const result = await res.json();
-    if (!result.ok) throw new Error(result.error || 'Parley API error.');
-    if (result.data?.entity) {
-      engine.current?.registerCustomEntity(result.data.entity);
-      setAiPrompt('');
-      close();
-      return result.message || `✦ Forged ${result.data.entity.name} into the world!`;
-    }
-    return result.message || 'Generative request applied.';
-  })}>✦ Forge with MIT Parley AI →</button>
-  <small style={{ color: '#8aa6b1' }}>Calls POST /api/edit-game → MIT Parley (Bearer PARLEY_API_KEY). Generative bosses, enemies, biomes, weapons, and mechanics.</small>
- </div>}
+ {menu === 'settings' && <><label>Sound volume <input type="range" aria-label="Sound volume" min="0" max="1" step="0.05" value={volume} onChange={e=>{ const v=Number(e.target.value); setVolume(v); gameAudio.unlock(); gameAudio.setVolume(v); engine.current?.setVolume(v); }}/></label><label className="check"><input type="checkbox" checked={shake} onChange={e => setShake(e.target.checked)}/>Camera shake</label>{import.meta.env.DEV && <label className="check"><input type="checkbox" checked={debug} onChange={e => setDebug(e.target.checked)}/>Show performance overlay</label>}<p>Controls: A/D or arrows move; Space jumps; J or left click attacks/mines; F or right click places; Hold E gathers trees/plants; E opens chests; Q casts Blink; R casts Shield; 1–8 selects; H recalls; I inventory; C crafting; M map; Escape pauses.</p><button onClick={() => void act(async () => { await engine.current?.save(); return 'Saved to this browser'; })}>Save now</button><button onClick={()=>open('forge')}>Open session creator for AI mechanics</button></>}
+ {menu === 'forge' && <CreatorPanel key={sessionRevision} store={store} engine={()=>engine.current} creations={creations} onCreations={setCreations} onEnter={enterAI} onExit={exitAI}/>}
  </div>{notice && <div className="menu-notice" role="status">{notice}</div>}</section></div>}
  <div className="hotbar" style={hud.status !== 'playing' && !menu && !showSearch && !showTutorial ? { pointerEvents: 'none' } : undefined}>{world.inventory.slice(0, 8).map((s, i) => <button key={i} className={hud.selected === i ? 'selected' : ''} onPointerDown={e => e.preventDefault()} onClick={() => engine.current?.select(i)} title={s ? `${ITEMS[s.id].name} ×${s.count} — ${ITEMS[s.id].description}` : 'Empty hotbar slot'}><kbd>{i + 1}</kbd><span>{s ? <ItemIcon id={s.id} /> : '·'}</span><small>{s?.count ?? ''}</small><label>{s ? ITEMS[s.id].name : 'Empty'}</label></button>)}</div><div className="reward-line" role="status"><span>✦</span>{hud.recall > 0 ? `Recall ${Math.round(hud.recall * 100)}%` : notice && !menu ? notice : hud.message}</div></section>
  <nav className="game-nav" style={hud.status !== 'playing' && !menu && !showSearch && !showTutorial ? { pointerEvents: 'none' } : undefined}>{([['inventory', 'Inventory · I'], ['crafting', 'Crafting · C'], ['skins', 'Skins'], ['forge', '✦ MIT Parley'], ['objectives', 'Earn coins'], ['shop', 'Sell resources'], ['map', 'Map · M'], ['settings', 'Settings']] as const).map(([id, title]) => <button key={id} onClick={() => open(id)}>{title}</button>)}<button onClick={() => { setMenu(null); engine.current?.recall(); }}>Recall · H</button></nav><div className="guide"><span><kbd>A D</kbd> Move <kbd>SPACE</kbd> Jump <kbd>J</kbd> Attack/Mine <kbd>F</kbd> Place <kbd>E</kbd> Gather/Use <kbd>Q</kbd> Blink <kbd>R</kbd> Shield</span><span>Next: {OBJECTIVES.find(o => !world.claimed.includes(o.id))?.name ?? 'Explore beyond the frontier'}</span></div>{error && <p role="alert">{error}</p>}</main>;

@@ -1,3 +1,4 @@
+import { exampleSpec } from '../creator/example';
 import { describe, it, expect } from 'vitest';
 import {
   getParleyConfig,
@@ -306,84 +307,10 @@ describe('Parley Service & Engine Formatter', () => {
     expect(parsed.catalogue.biomes).toContain('Crystal depths');
   });
 
-  it('executes generative boss request, writes custom entity and texture files, and updates registry', async () => {
-    const testBaseDir = path.join(process.cwd(), 'test-fixtures', 'parley-service-gen-test');
-    if (fs.existsSync(testBaseDir)) {
-      fs.rmSync(testBaseDir, { recursive: true, force: true });
-    }
-
-    const mockFetch = async () =>
-      new Response(
-        JSON.stringify({
-          choices: [
-            {
-              message: {
-                content: JSON.stringify({
-                  entityType: 'boss',
-                  explanation: 'Forged an obsidian dreadnought boss to challenge the explorer.',
-                  entity: {
-                    id: 'obsidian-dreadnought',
-                    name: 'Obsidian Dreadnought',
-                    category: 'boss',
-                    baseType: 'sentinel',
-                    hp: 1400,
-                    damage: 55,
-                    speed: 45,
-                    range: 450,
-                    reward: 800,
-                    scale: 2.8,
-                    hitbox: { width: 90, height: 90 },
-                    attackPattern: {
-                      type: 'burst',
-                      interval: 2200,
-                      burstCount: 4,
-                      projectileColor: '#ef4444',
-                      warningTimeMs: 800,
-                    },
-                    textureTheme: {
-                      primaryColor: '#18181b',
-                      secondaryColor: '#dc2626',
-                      accentColor: '#f97316',
-                      shape: 'mech',
-                    },
-                    lore: 'A war automaton left behind from the ancient excavation.',
-                  },
-                }),
-              },
-            },
-          ],
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
-      );
-
-    const res = await handleGameEdit(
-      {
-        prompt: 'Add a terrifying mechanical dreadnought boss',
-        gameType: 'open-ended',
-        context: { playerLevel: 5, activeBiome: 'Rust wastes' },
-      },
-      { apiKey: 'test-key', baseDir: testBaseDir },
-      mockFetch as unknown as typeof fetch
-    );
-
-    expect(res.ok).toBe(true);
-    expect(res.statusCode).toBe(200);
-    expect(res.message).toContain('Obsidian Dreadnought');
-    const data = res.data as any;
-    expect(data.entityType).toBe('boss');
-    expect(data.entity.id).toBe('obsidian-dreadnought');
-
-    // Verify files were generated on disk
-    expect(fs.existsSync(data.files.json)).toBe(true);
-    expect(fs.existsSync(data.files.texture)).toBe(true);
-    const savedJson = JSON.parse(fs.readFileSync(data.files.json, 'utf-8'));
-    expect(savedJson.name).toBe('Obsidian Dreadnought');
-    const savedSvg = fs.readFileSync(data.files.texture, 'utf-8');
-    expect(savedSvg).toContain('<svg');
-    expect(savedSvg).toContain('viewBox="0 0 90 90"');
-
-    // Clean up test files
-    fs.rmSync(testBaseDir, { recursive: true, force: true });
+  it('generates a validated session specification without source files', async () => {
+    const dir=path.join(process.cwd(),'test-fixtures','session-only');
+    const res=await handleGameEdit({prompt:'Create a crystal guardian',gameType:'generative'},{apiKey:'test-key',baseDir:dir},async()=>new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(exampleSpec)}}]})));
+    expect(res.ok).toBe(true);expect(res.data).toEqual(exampleSpec);expect(fs.existsSync(dir)).toBe(false);
   });
 
   it('rejects hallucinated schema in generative mode and does NOT write any files', async () => {
@@ -426,79 +353,19 @@ describe('Parley Service & Engine Formatter', () => {
 
     expect(res.ok).toBe(false);
     expect(res.statusCode).toBe(422);
-    expect(res.error).toContain('Schema validation failed');
+    expect(res.error).toContain('unsupported capability');
 
     // Verify NO files were created on disk!
     const entitiesDir = path.join(testBaseDir, 'src', 'custom', 'entities');
     expect(fs.existsSync(entitiesDir)).toBe(false);
   });
 
-  it('completely removes temperature for gpt-6-astra (reasoning model) and keeps 0.2 for non-reasoning models', async () => {
-    let capturedBody: any = null;
-
-    const mockFetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
-      capturedBody = JSON.parse(String(init?.body || '{}'));
-      return new Response(
-        JSON.stringify({
-          choices: [
-            {
-              message: {
-                content: JSON.stringify({
-                  entityType: 'enemy',
-                  explanation: 'Created high-tier reasoning enemy',
-                  entity: {
-                    id: 'void-crawler',
-                    name: 'Void Crawler',
-                    category: 'crawler',
-                    baseClass: 'BaseAgileCrawler',
-                    hp: 80,
-                    damage: 15,
-                    speed: 65,
-                    range: 280,
-                    reward: 20,
-                    scale: 1.0,
-                    hasCollider: true,
-                    mass: 1.0,
-                    logicController: 'PatrolAndAttack',
-                    collider: { width: 24, height: 24, isTrigger: false },
-                  },
-                }),
-              },
-            },
-          ],
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
-      );
-    };
-
-    // gpt-6-astra (default) must completely omit temperature to fix 400 error
-    const resAstra = await handleGameEdit(
-      {
-        prompt: 'Create a fast void crawler',
-        gameType: 'open-ended',
-      },
-      { apiKey: 'test-key', model: 'gpt-6-astra' },
-      mockFetch as unknown as typeof fetch
-    );
-
-    expect(resAstra.ok).toBe(true);
-    expect(capturedBody.model).toBe('gpt-6-astra');
-    expect(capturedBody.temperature).toBeUndefined();
-    expect(capturedBody.max_tokens).toBeUndefined();
-
-    // Standard non-reasoning model retains temperature
-    const resStandard = await handleGameEdit(
-      {
-        prompt: 'Create a fast void crawler',
-        gameType: 'open-ended',
-      },
-      { apiKey: 'test-key', model: 'openai/gpt-4' },
-      mockFetch as unknown as typeof fetch
-    );
-
-    expect(resStandard.ok).toBe(true);
-    expect(capturedBody.model).toBe('openai/gpt-4');
-    expect(capturedBody.temperature).toBe(0.2);
+  it('omits temperature for reasoning models and sends only bounded JSON requests', async () => {
+    for(const model of ['gpt-6-astra','openai/gpt-4']) {
+      let body:any;
+      const result=await handleGameEdit({prompt:'Create a crystal guardian',gameType:'generative'},{apiKey:'test-key',model},async(_url,init)=>{body=JSON.parse(String(init?.body));return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(exampleSpec)}}]}));});
+      expect(result.ok).toBe(true);expect(body.model).toBe(model);expect(body.temperature).toBe(model==='gpt-6-astra'?undefined:.3);expect(body.max_tokens).toBeUndefined();
+    }
   });
 
   it('isReasoningModel correctly identifies models that reject temperature parameters', () => {
@@ -549,104 +416,10 @@ describe('Parley Service & Engine Formatter', () => {
     expect(prompt).toContain('PatrolAndAttack');
   });
 
-  it('automatically performs self-healing retry when Parley output initially fails schema validation', async () => {
-    const testBaseDir = path.join(process.cwd(), 'test-fixtures', 'parley-retry-test');
-    if (fs.existsSync(testBaseDir)) {
-      fs.rmSync(testBaseDir, { recursive: true, force: true });
-    }
-
-    let attempt = 0;
-    let secondCallBody: any = null;
-
-    const mockFetch = async (_url: RequestInfo | URL, init?: RequestInit) => {
-      attempt++;
-      if (attempt === 1) {
-        // First attempt: out-of-bounds HP
-        return new Response(
-          JSON.stringify({
-            choices: [
-              {
-                message: {
-                  content: JSON.stringify({
-                    entityType: 'boss',
-                    explanation: 'Initial invalid boss',
-                    entity: {
-                      id: 'overtuned-boss',
-                      name: 'Overtuned Boss',
-                      category: 'boss',
-                      hp: 99999, // Exceeds 5000 max!
-                      damage: 50,
-                      speed: 40,
-                      range: 300,
-                      reward: 300,
-                    },
-                  }),
-                },
-              },
-            ],
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        );
-      } else {
-        // Second attempt: Parley self-corrects based on error prompt!
-        secondCallBody = JSON.parse(String(init?.body || '{}'));
-        return new Response(
-          JSON.stringify({
-            choices: [
-              {
-                message: {
-                  content: JSON.stringify({
-                    entityType: 'boss',
-                    explanation: 'Corrected boss with safe stats',
-                    entity: {
-                      id: 'rebalanced-boss',
-                      name: 'Rebalanced Boss',
-                      category: 'boss',
-                      baseClass: 'BaseGroundBoss',
-                      hp: 2500, // Valid!
-                      damage: 50,
-                      speed: 40,
-                      range: 300,
-                      reward: 300,
-                      scale: 2.0,
-                      hasCollider: true,
-                      mass: 5.0,
-                      logicController: 'AggressiveBoss',
-                      collider: { width: 96, height: 96, isTrigger: false },
-                    },
-                  }),
-                },
-              },
-            ],
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
-    };
-
-    const res = await handleGameEdit(
-      {
-        prompt: 'Add an ancient mountain boss',
-        gameType: 'open-ended',
-      },
-      { apiKey: 'test-key', baseDir: testBaseDir },
-      mockFetch as unknown as typeof fetch
-    );
-
-    expect(attempt).toBe(2);
-    expect(res.ok).toBe(true);
-    expect(res.statusCode).toBe(200);
-    expect(res.data).toBeDefined();
-    expect((res.data as any).entity.name).toBe('Rebalanced Boss');
-    expect((res.data as any).autoCorrected).toBe(true);
-    // Ensure second call included validation error in user prompt
-    expect(secondCallBody.messages[3].content).toContain('failed internal engine validation');
-    // Ensure second call for gpt-6-astra also completely omits temperature to prevent 400 errors
-    expect(secondCallBody.temperature).toBeUndefined();
-    expect(secondCallBody.max_tokens).toBeUndefined();
-
-    // Clean up
-    fs.rmSync(testBaseDir, { recursive: true, force: true });
+  it('retries invalid specifications once with the validation error', async () => {
+    let attempt=0,body:any;
+    const result=await handleGameEdit({prompt:'Create a prism guardian',gameType:'generative'},{apiKey:'test-key'},async(_url,init)=>{body=JSON.parse(String(init?.body));attempt++;const spec=structuredClone(exampleSpec);if(attempt===1)spec.stats.health=99999;return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(spec)}}]}));});
+    expect(result.ok).toBe(true);expect(attempt).toBe(2);expect(body.messages[3].content).toContain('Validation failed: health');expect(body.temperature).toBeUndefined();
   });
 
   it('explicitly targets gpt-6-astra by default and supports PARLEY_MODEL / platform routing override', async () => {

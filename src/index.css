@@ -24,3 +24,10 @@
 .hotbar button span:has(.item-icon),.item-slot span:has(.item-icon){display:flex;align-items:center;justify-content:center;line-height:0}
 
 .generation-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;align-items:end}.generation-form label{display:flex;flex-direction:column;gap:6px;font-size:12px;text-transform:capitalize}.seed-roll{margin-top:6px;padding:6px 10px;font-size:11px}.worlds-create-panel .primary{width:100%;margin-top:16px}.sandbox-header .header-right{position:relative;z-index:50;pointer-events:auto}
+.creator-panel { display:flex; flex-direction:column; gap:12px; }
+.creator-panel label { display:flex; flex-direction:column; gap:6px; }
+.creator-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.creator-panel [role=alert] { color:#ffb0b0; }
+.ai-session-banner { position:absolute; bottom:115px; left:18px; z-index:25; padding:5px 10px; background:#18363eeb; color:#bcf9e7; font-size:11px; border:1px solid #69b59c; }
+.ai-session-banner button { padding:3px 7px; margin-left:10px; }
+.ai-meter { position:relative; z-index:24; display:inline-flex; flex-direction:column; margin:70px 8px 0; padding:6px 12px; background:#18202fe8; border:1px solid; }

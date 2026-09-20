@@ -1,3 +1,5 @@
+import { CreatorRenderer } from '../creator/renderer';
+import type { CreationSpec } from '../creator/spec';
 import { GameSound } from './sound';
 import { gameAudio } from './audio';
 import { bossSites } from './bossSites';
@@ -36,11 +38,11 @@ import {
   type Biome,
   type ItemId,
 } from './model';
-import { readTile, editTile, clearLine, solid, biome, surface, hash, harvestables, landmarks, protectedTile, findGroundY, calculateSafeSurfaceSpawnY, clearUnsupportedHarvest, sweepUnsupportedHarvest, HARVEST_MS, type Harvest } from './terrain';
+import { readTile, editTile, clearLine, solid, biome, surface, hash, harvestables, landmarks, protectedTile, clearUnsupportedHarvest, sweepUnsupportedHarvest, HARVEST_MS, type Harvest } from './terrain';
 import { getToolProfile } from './registry/toolsAndWeapons';
-import type { GenerativeEntity, EnemyEntity, BiomeEntity, WeaponEntity, MechanicEntity } from '../server/entitySchemas';
 export type Menu = 'inventory' | 'crafting' | 'cooking' | 'skins' | 'objectives' | 'shop' | 'map' | 'worlds' | 'settings' | 'forge' | 'storage' | null;
 export interface SandboxHud {
+    aiMeters?: {id:string;label:string;icon:string;color:string;value:number;maximum:number;remaining:number}[];
     health: number;
     maxHealth: number;
     mana: number;
@@ -66,7 +68,9 @@ export interface SandboxHud {
     recall: number;
     activeEffects: { type: string; name: string; icon: string; remainingMs: number }[];
 }
+export interface PlayerSessionSnapshot { health:number;mana:number;effects:ActiveStatusEffect[];shieldBudget:number; }
 export interface SandboxController {
+    capturePlayer: () => PlayerSessionSnapshot | undefined;
     resume: () => void;
     pause: () => void;
     select: (n: number) => void;
@@ -80,7 +84,9 @@ export interface SandboxController {
     setMana: (n: number) => void;
     setHunger: (n: number) => void;
     feedback: () => void;
-    registerCustomEntity: (entity: GenerativeEntity) => void;
+    applyCreation: (spec: CreationSpec) => CreationSpec;
+    removeCreation: (id: string) => void;
+    resetCreations: () => void;
     castBlink?: () => void;
     castShield?: () => void;
     eatItem?: (slot: number) => void;
@@ -89,72 +95,12 @@ export interface VerificationPort {
     read:()=>{x:number;y:number;vx:number;vy:number;grounded:boolean;blockedLeft:boolean;blockedRight:boolean;health:number;mana:number;status:string;clock:number;chunks:number;bodies:number;fps:number;busy:boolean;message:string;recall:number;enemies:{id:string;kind:Kind;x:number;y:number;hp:number;state:string}[]};
     hold:(keys:string[])=>void; aim:(x:number,y:number)=>void; select:(slot:number)=>void;resume:()=>void;pause:()=>void;recall:()=>void;respawn:()=>void;save:()=>Promise<void>;
     encounter:(kind:Kind,x:number,y:number,id:string)=>void;
+    creatorRead?:()=>{actors:number;defeated:number;health:number;shots:number;swordShots:number;meters:number;meterValue:number;activeEffects:number;textures:number;objects:number;time:number};
+    creatorBuildup?:(source:string)=>void;
     castBlink?:()=>void;castShield?:()=>void;
 }
-function parseHexColor(hex?: string, fallback: number = 0xe5484d): number {
-    if (!hex || typeof hex !== 'string') return fallback;
-    const clean = hex.replace('#', '');
-    const num = parseInt(clean, 16);
-    return Number.isNaN(num) ? fallback : num;
-}
-
-function generateCustomTexture(scene: Phaser.Scene, foe: EnemyEntity): void {
-    if (scene.textures.exists(foe.id)) return;
-    const w = Math.max(16, Math.min(128, foe.hitbox?.width || (foe.category === 'boss' ? 64 : 32)));
-    const h = Math.max(16, Math.min(128, foe.hitbox?.height || (foe.category === 'boss' ? 64 : 32)));
-    const primary = parseHexColor(foe.textureTheme?.primaryColor, 0xe5484d);
-    const secondary = parseHexColor(foe.textureTheme?.secondaryColor, 0xff977d);
-    const accent = parseHexColor(foe.textureTheme?.accentColor, 0xffd386);
-    const shape = foe.textureTheme?.shape || 'mech';
-
-    const g = scene.make.graphics({ x: 0, y: 0 });
-    if (shape === 'dragon') {
-        g.fillStyle(secondary, 0.85);
-        g.fillTriangle(w * 0.1, h * 0.5, w * 0.5, h * 0.2, w * 0.5, h * 0.7);
-        g.fillTriangle(w * 0.9, h * 0.5, w * 0.5, h * 0.2, w * 0.5, h * 0.7);
-        g.fillStyle(primary, 1);
-        g.fillRoundedRect(w * 0.35, h * 0.2, w * 0.3, h * 0.65, 4);
-        g.fillStyle(accent, 1);
-        g.fillTriangle(w * 0.35, h * 0.2, w * 0.28, h * 0.05, w * 0.45, h * 0.15);
-        g.fillTriangle(w * 0.65, h * 0.2, w * 0.72, h * 0.05, w * 0.55, h * 0.15);
-        g.fillCircle(w * 0.42, h * 0.35, 3);
-        g.fillCircle(w * 0.58, h * 0.35, 3);
-    } else if (shape === 'beast') {
-        g.fillStyle(primary, 1);
-        g.fillEllipse(w * 0.5, h * 0.55, w * 0.8, h * 0.6);
-        g.fillStyle(secondary, 1);
-        g.fillTriangle(w * 0.25, h * 0.35, w * 0.35, h * 0.15, w * 0.45, h * 0.35);
-        g.fillTriangle(w * 0.75, h * 0.35, w * 0.65, h * 0.15, w * 0.55, h * 0.35);
-        g.fillStyle(accent, 1);
-        g.fillCircle(w * 0.38, h * 0.48, 3);
-        g.fillCircle(w * 0.62, h * 0.48, 3);
-    } else if (shape === 'crystal') {
-        g.fillStyle(primary, 1);
-        g.fillTriangle(w * 0.5, h * 0.05, w * 0.85, h * 0.5, w * 0.15, h * 0.5);
-        g.fillStyle(secondary, 1);
-        g.fillTriangle(w * 0.5, h * 0.95, w * 0.85, h * 0.5, w * 0.15, h * 0.5);
-        g.fillStyle(accent, 1);
-        g.fillCircle(w * 0.5, h * 0.5, 4);
-    } else if (shape === 'humanoid') {
-        g.fillStyle(secondary, 1);
-        g.fillCircle(w * 0.5, h * 0.25, w * 0.2);
-        g.fillStyle(primary, 1);
-        g.fillRoundedRect(w * 0.3, h * 0.4, w * 0.4, h * 0.45, 3);
-        g.fillStyle(accent, 1);
-        g.fillCircle(w * 0.5, h * 0.25, 3);
-    } else {
-        g.fillStyle(primary, 1);
-        g.fillRoundedRect(w * 0.15, h * 0.15, w * 0.7, h * 0.7, 4);
-        g.fillStyle(secondary, 1);
-        g.fillRect(w * 0.25, h * 0.25, w * 0.5, h * 0.25);
-        g.fillStyle(accent, 1);
-        g.fillCircle(w * 0.5, h * 0.37, 4);
-    }
-    g.generateTexture(foe.id, w, h);
-    g.destroy();
-}
-
-export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: SandboxHud) => void, onMenu: (m: Menu) => void, verification?: (port:VerificationPort)=>void): SandboxController {
+function parseHexColor(hex?:string,fallback=0xe5484d){const n=parseInt(hex?.replace('#','')??'',16);return Number.isNaN(n)?fallback:n;}
+export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: SandboxHud) => void, onMenu: (m: Menu) => void, verification?: (port:VerificationPort)=>void, restore?:PlayerSessionSnapshot): SandboxController {
     const sound = new GameSound();
     let scene: WorldScene | undefined, disposed = false;
     class WorldScene extends Phaser.Scene {
@@ -182,6 +128,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         jumped = false;
         lastAttack = -1000;
         lastMagic = -10000;
+        creator?: CreatorRenderer;
         hurtUntil = 0;
         knockUntil = 0;
         lastHud = 0;
@@ -231,6 +178,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         }
         create() {
             sandboxAssets(this);
+            if(restore){this.health=restore.health;this.mana=restore.mana;this.activeEffects=structuredClone(restore.effects);this.shieldBudget=restore.shieldBudget;}
             for (const [id,boss] of Object.entries(BOSS_REGISTRY)) ENEMIES[id] = {
                 name: boss.name, texture: id, hp: boss.maxHp, damage: boss.damage, speed: boss.speed, range: 600,
                 reward: boss.coinReward, collider: boss.collider, baseType: 'sentinel'
@@ -309,8 +257,8 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 if (a.getData('retaliating')) this.damage(ANIMAL_REGISTRY[a.getData('species')].retaliateDamage ?? 1, a.x);
             });
             this.physics.add.overlap(this.player, this.foes, (_p, f) => { const foe = f as Phaser.Physics.Arcade.Sprite; if (!foe.getData('dying'))
-                { const kind = foe.getData('kind') as Kind; if (kind === 'explosion_bot') return; const elite = (foe.getData('eliteDamage') as number) || 1; this.damage(Math.ceil((ENEMIES[kind]?.damage ?? 10) * elite), foe.x); if (!this.nearBase() && kind.includes('frost')) this.addEffect('slowing',1500,.2); if (!this.nearBase() && kind.includes('fungal')) this.addEffect('poison',2000,1); } });
-            this.physics.add.overlap(this.player, this.hostile, (_p, s) => { const shot = s as Phaser.Physics.Arcade.Sprite; this.damage(shot.getData('damage'), shot.x); shot.destroy(); });
+                { if(foe.getData('creator')) { this.creator?.runtime.contact(foe.getData('creator'));return; } const kind = foe.getData('kind') as Kind; if (kind === 'explosion_bot') return; const elite = (foe.getData('eliteDamage') as number) || 1; this.damage(Math.ceil((ENEMIES[kind]?.damage ?? 10) * elite), foe.x); if (!this.nearBase() && kind.includes('frost')) this.addEffect('slowing',1500,.2); if (!this.nearBase() && kind.includes('fungal')) this.addEffect('poison',2000,1); } });
+            this.physics.add.overlap(this.player, this.hostile, (_p, s) => { const shot = s as Phaser.Physics.Arcade.Sprite; this.damage(shot.getData('damage'), shot.x, 'enemy-projectile'); shot.destroy(); });
             this.target = this.add.graphics().setDepth(12);
             this.light = this.add.graphics().setDepth(20).setScrollFactor(0);
             this.drawBase();
@@ -325,6 +273,8 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 hold:keys=>{const next=new Set(keys);for(const key of next)if(!this.held.has(key))this.fresh.add(key);this.held=next;},
                 aim:(x,y)=>{this.cursor={x,y,known:true};},select:n=>{this.selected=n;},resume:()=>this.resume(),pause:()=>this.pause(),recall:()=>this.recall(),respawn:()=>this.respawn(),save:()=>this.save(),
                 encounter:(kind,x,y,id)=>{if(this.foes.countActive()<(store.world.settings.difficulty==='extreme'?120:24))this.createEnemy(kind,x,y,id);},
+                creatorRead:()=>this.creator?.read()??{actors:0,defeated:0,health:0,shots:0,swordShots:0,meters:0,meterValue:0,activeEffects:0,textures:0,objects:this.children.length,time:0},
+                creatorBuildup:source=>this.creator?.runtime.buildup(source),
                 castBlink:()=>this.castBlink(),castShield:()=>this.castShield()
             });
         }
@@ -350,6 +300,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         }
         nearBase() { return Math.abs(this.player.x - 16 * TILE) < 320 && Math.abs(this.player.y - 22 * TILE) < 120; }
         emit() {
+            if(this.status==='dead')this.creator?.runtime.death();
             if (disposed || !this.player) return;
             const stats = derivePlayerStats(store.world, this.activeEffects);
             const activeList: { type: string; name: string; icon: string; remainingMs: number }[] = this.activeEffects.map(e => ({
@@ -388,11 +339,13 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 y: this.player.y,
                 recall: this.recallStart ? Math.min(1, (this.clock - this.recallStart) / 2500) : 0,
                 activeEffects: activeList,
+                aiMeters: this.creator?.runtime.meters.filter(m=>m.value>0||m.until>this.creator!.runtime.time).map(m=>({id:`${m.owner}:${m.spec.id}`,label:m.spec.label,icon:m.spec.icon,color:m.spec.color,value:m.value,maximum:m.spec.maximum,remaining:Math.max(0,m.until-this.creator!.runtime.time)})),
             });
         }
         notify(m: string) { sound.play(m.includes('awakens') ? 'boss' : 'reward'); gameAudio.unlock(); this.message = m; this.noticeUntil = this.clock + 4500; this.emit(); }
-        async transact(action: Parameters<SaveStore['transact']>[0]) { try {
+        async transact(action: Parameters<SaveStore['transact']>[0]) { if(disposed)return false; try {
             const result = await store.transact(action);
+            if(disposed)return false;
             if (typeof result === 'string')
                 this.notify(result);
             return true;
@@ -411,7 +364,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         resume() { sound.unlock(); gameAudio.unlock(); if (this.status === 'dead')
             return; this.status = 'playing'; this.time.paused = false; this.held.clear(); this.fresh.clear(); this.tweens.resumeAll(); this.emit(); }
         async flushSimulation() {
-            if (this.simulationBusy || this.simulationMs <= 0) return;
+            if (disposed || this.simulationBusy || this.simulationMs <= 0) return;
             const dt = Math.min(1000, this.simulationMs);
             this.simulationMs -= dt; this.simulationBusy = true;
             try {
@@ -420,11 +373,12 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             } catch { this.simulationMs += dt; }
             finally { this.simulationBusy = false; }
         }
-        async save() { await this.flushSimulation(); if (this.player)
+        async save() { if(disposed)return; await this.flushSimulation(); if (this.player && !disposed)
             await store.savePosition(this.player.x, this.player.y, this.selected); }
         recall() { if (this.status !== 'playing')
             return; this.recallStart = this.clock || 1; this.notify('Recalling to the outpost… remain still for 2.5 seconds. Damage cancels recall.'); }
         respawn() {
+            this.creator?.runtime.death();
             this.held.clear(); this.fresh.clear(); this.buffer = -1000; this.lastGround = -1000; this.fallPeak = 0; this.fallStartY = 0; this.fallAirSince = 0; this.wasGrounded = true;
             this.jumped = false; this.knockUntil = 0; this.lastAttack = -1000; this.lastMagic = -1000;
             this.mining = {key: '', progress: 0}; this.cursor.known = false;
@@ -434,7 +388,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             const stats = derivePlayerStats(store.world, this.activeEffects);
             this.health = stats.maxHealth; this.mana = stats.maxMana;
             this.hurtUntil = this.clock + 2000; this.recallStart = 0;
-            this.shots.clear(true, true); this.hostile.clear(true, true); this.foes.clear(true, true); this.wildlife.group.clear(true, true);
+            this.shots.clear(true, true); this.hostile.clear(true, true); for(const f of [...this.foes.getChildren()])if(!f.getData('creator'))f.destroy(); this.wildlife.group.clear(true, true);
             this.player.setVelocity(0).setAcceleration(0);
             this.player.setPosition(store.world.checkpoint.x, store.world.checkpoint.y);
             this.safe = { ...store.world.checkpoint };
@@ -452,6 +406,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             this.health = Math.max(0, Math.min(cap, Math.floor(n)));
             this.hurtUntil = this.clock + 400;
             if (!this.health) {
+                this.creator?.runtime.death();
                 this.status = 'dead';
                 this.held.clear();
                 this.physics.pause();
@@ -476,8 +431,8 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             this.emit();
             void store.transact((_b, w) => { w.hunger = value; }).catch(() => { });
         }
-        damage(n: number, x: number) {
-            if (this.status !== 'playing' || this.clock < this.hurtUntil || this.nearBase())
+        damage(n: number, x: number, source='enemy-contact') {
+            if (this.status !== 'playing' || (source!=='status' && (this.clock < this.hurtUntil || this.nearBase())))
                 return;
             const stats = derivePlayerStats(store.world, this.activeEffects);
             let incoming = n;
@@ -488,16 +443,17 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             }
             if (this.nearWardingTotem) incoming *= 0.7;
             const netDamage = Math.max(1, Math.ceil((incoming - stats.defense) * (store.world.settings.difficulty === 'explorer' ? .7 : store.world.settings.difficulty === 'extreme' ? 1.85 : 1)));
+            if(source==='enemy-contact'||source==='enemy-projectile') this.creator?.runtime.buildup(source);
             sound.play('damage');
             this.health = Math.max(0, this.health - netDamage);
-            this.hurtUntil = this.clock + 1000;
+            if(source!=='status')this.hurtUntil = this.clock + 1000;
             this.knockUntil = this.clock + 180;
             this.fallPeak = 0;
             this.fallStartY = this.player.y;
             this.fallAirSince = this.clock;
             this.wasGrounded = false;
             const kbMult = Math.max(0.2, 1 - stats.knockbackResistance);
-            this.player.setAccelerationX(0).setVelocity((this.player.x < x ? -170 : 170) * kbMult, -170 * kbMult);
+            if(source!=='status')this.player.setAccelerationX(0).setVelocity((this.player.x < x ? -170 : 170) * kbMult, -170 * kbMult);
             if (this.recallStart) {
                 this.recallStart = 0;
                 this.notify('Recall interrupted by damage.');
@@ -506,6 +462,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             if (this.shake)
                 this.cameras.main.shake(100, .003);
             if (!this.health) {
+                this.creator?.runtime.death();
                 this.status = 'dead';
                 this.held.clear();
                 this.physics.pause();
@@ -514,6 +471,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             this.emit();
         }
         hit(f: Phaser.Physics.Arcade.Sprite, damage: number, statusEffect?: string, fromEnemy = false) {
+            if(f.getData('creator')) { if(!fromEnemy) this.creator?.runtime.hit(f.getData('creator'),damage); if(f.active)f.setData('hp',this.creator?.runtime.actors.get(f.getData('creator'))?.hp); return; }
             if (f.getData('dying')) return;
             // Mobs never damage other mobs
             if (fromEnemy && f.getData('team') === 'enemy') return;
@@ -1378,52 +1336,15 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 }
             }
         }
-        registerCustomEntity(entity: GenerativeEntity) {
-            if ('baseType' in entity || 'hp' in entity) {
-                const foe = entity as EnemyEntity;
-                generateCustomTexture(this, foe);
-                ENEMIES[foe.id] = {
-                    texture: foe.id,
-                    name: foe.name,
-                    hp: foe.hp,
-                    damage: foe.damage,
-                    speed: foe.speed,
-                    range: foe.range,
-                    reward: foe.reward,
-                    scale: foe.scale,
-                    hitbox: foe.hitbox,
-                    collider: foe.collider,
-                    baseType: foe.baseType,
-                    baseClass: foe.baseClass,
-                    logicController: foe.logicController,
-                    mass: foe.mass,
-                    hasCollider: foe.hasCollider,
-                    attackPattern: foe.attackPattern,
-                };
-                const spawnX = this.player.x + (this.facing >= 0 ? 160 : -160);
-                const spawnTx = Math.floor(spawnX / TILE);
-                const playerTy = Math.floor(this.player.y / TILE);
-                const ground_Y = findGroundY(store.world, spawnTx, playerTy);
-                const entityHeight = Math.round((foe.collider?.height || foe.hitbox?.height || 32) * (foe.scale || 1));
-                const isFlying = foe.baseClass === 'BaseFlyingEnemy' || foe.baseType === 'drone' || foe.logicController === 'HoverAndStrafe';
-                const spawnY = calculateSafeSurfaceSpawnY(ground_Y, entityHeight, isFlying);
-                this.createEnemy(foe.id as Kind, spawnX, spawnY, `${foe.id}-${Date.now()}`);
-                this.notify(`✦ ${foe.category.toUpperCase()} spawned: "${foe.name}" (HP ${foe.hp}, DMG ${foe.damage})`);
-            } else if ('gravityMultiplier' in entity) {
-                const mech = entity as MechanicEntity;
-                this.physics.world.gravity.y = MOVEMENT.gravity * mech.gravityMultiplier;
-                if (mech.cameraShakeIntensity !== undefined) {
-                    this.shake = mech.cameraShakeIntensity > 0;
-                }
-                this.notify(`✦ Mechanics active: ${mech.name}`);
-            } else if ('skyColor' in entity) {
-                const bio = entity as BiomeEntity;
-                this.notify(`✦ Biome mapped: "${bio.name}" (Danger Level ${bio.dangerLevel})`);
-            } else if ('damage' in entity) {
-                const wep = entity as WeaponEntity;
-                this.notify(`✦ Weapon registered: "${wep.name}" (${wep.category}, ${wep.damage} DMG)`);
-            }
-            this.emit();
+        applyCreation(spec: CreationSpec) {
+            if(!store.aiSession) throw Error('Enter a temporary AI session first.');
+            this.creator ??= new CreatorRenderer(this,this.foes,()=>this.player,(p,r)=>{
+                for(let x=p.x-r;x<=p.x+r;x+=TILE/2) for(let y=p.y-r;y<=p.y+r;y+=TILE/2) {
+                    const tx=Math.floor(x/TILE),ty=Math.floor(y/TILE);
+                    if(Math.abs(tx)>=WORLD_LIMIT-2||ty<1||ty>=DEPTH-2||solid(store.world,tx,ty))return false;
+                }return true;
+            },(n,x,source)=>{const before=this.health;this.damage(n,x,source);return this.health<before&&this.status==='playing';});
+            const result=this.creator.apply(spec);this.emit();return result;
         }
         bossAI(f: Phaser.Physics.Arcade.Sprite) {
             const id=f.getData('kind') as string, def=BOSS_REGISTRY[id];
@@ -1461,6 +1382,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         }
         ai() {
             for (const obj of this.foes.getChildren()) {
+                if(obj.getData('creator'))continue;
                 const f = obj as Phaser.Physics.Arcade.Sprite,
                       kind = f.getData('kind') as Kind,
                       p = ENEMIES[kind] || ENEMIES.sentinel,
@@ -1803,6 +1725,8 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             this.safe = { x: this.player.x, y: this.player.y };
             delta = Math.min(delta, 50);
             this.clock += delta;
+            this.creator?.runtime.tick(delta);
+            this.creator?.draw();
             this.simulationMs += delta;
             if (this.simulationMs >= 1000) void this.flushSimulation();
             const m = MOVEMENT, b = this.player.body as Phaser.Physics.Arcade.Body;
@@ -1830,6 +1754,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                     this.burst(this.player.x, this.player.y + 18, 0xffb889);
                     this.notify(this.health ? `Hard landing (−${amount}).` : 'Signal lost. Respawn at the beacon; all possessions are retained.');
                     if (!this.health) {
+                this.creator?.runtime.death();
                         this.status = 'dead';
                         this.held.clear();
                         this.physics.pause();
@@ -2208,7 +2133,11 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
             scene.selected = n;
             scene.emit();
         } }, recall: () => { host.focus(); scene?.resume(); scene?.recall(); }, respawn: () => { host.focus(); scene?.respawn(); }, save, setVolume: n => { sound.setVolume(n); gameAudio.setVolume(n); }, feedback: () => { sound.unlock();sound.play('reward'); }, setShake: b => { if (scene)
-            scene.shake = b; }, setHealth: n => { scene?.setHealth(n); }, setMana: n => { scene?.setMana(n); }, setHunger: n => { scene?.setHunger(n); }, registerCustomEntity: (entity: GenerativeEntity) => { scene?.registerCustomEntity(entity); },
+            scene.shake = b; }, setHealth: n => { scene?.setHealth(n); }, setMana: n => { scene?.setMana(n); }, setHunger: n => { scene?.setHunger(n); },
+        capturePlayer: () => scene ? {health:scene.health,mana:scene.mana,effects:structuredClone(scene.activeEffects),shieldBudget:scene.shieldBudget} : undefined,
+        applyCreation: spec => { if(!scene)throw Error('Game is not ready');return scene.applyCreation(spec); },
+        removeCreation: id => { scene?.creator?.runtime.remove(id);scene?.creator?.draw();scene?.emit(); },
+        resetCreations: () => { scene?.creator?.runtime.reset();scene?.creator?.draw();scene?.emit(); },
             castBlink: () => { host.focus(); scene?.castBlink(); }, castShield: () => { host.focus(); scene?.castShield(); },
-            destroy: () => { disposed = true; sound.close(); window.removeEventListener('keydown', keydown); window.removeEventListener('keyup', keyup); window.removeEventListener('pointerup', up); window.removeEventListener('blur', blur); document.removeEventListener('visibilitychange', hidden); host.removeEventListener('pointermove', move); host.removeEventListener('pointerdown', down); host.removeEventListener('contextmenu', context); host.removeEventListener('blur', blur); game.destroy(true); } };
+            destroy: () => { disposed = true; scene?.creator?.destroy(); sound.close(); window.removeEventListener('keydown', keydown); window.removeEventListener('keyup', keyup); window.removeEventListener('pointerup', up); window.removeEventListener('blur', blur); document.removeEventListener('visibilitychange', hidden); host.removeEventListener('pointermove', move); host.removeEventListener('pointerdown', down); host.removeEventListener('contextmenu', context); host.removeEventListener('blur', blur); game.destroy(true); } };
 }
