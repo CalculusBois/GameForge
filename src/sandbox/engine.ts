@@ -6,7 +6,8 @@ import { SaveStore } from './persistence';
 import { ENEMIES, type Kind } from './enemies';
 import { TILE, CHUNK, DEPTH, WORLD_LIMIT, ITEMS, MATERIALS, BUILDING, WEAPONS, add, remove, chest, type Biome, type ItemId } from './model';
 import { readTile, editTile, clearLine, solid, biome, surface, hash, harvestables, landmarks, protectedTile } from './terrain';
-export type Menu = 'inventory' | 'crafting' | 'skins' | 'objectives' | 'shop' | 'map' | 'worlds' | 'settings' | null;
+import { sessionStart_ as analyticsStart, track as analyticsTrack } from '../analytics';
+export type Menu = 'inventory' | 'crafting' | 'skins' | 'objectives' | 'shop' | 'map' | 'worlds' | 'settings' | 'stats' | null;
 export interface SandboxHud {
     health: number;
     mana: number;
@@ -82,6 +83,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         decorDirty = false;
         constructor() { super('Sandbox'); scene = this; }
         create() {
+            analyticsStart(store.world.id, store.world.settings.difficulty);
             sandboxAssets(this);
             this.sky = this.add.graphics().setScrollFactor(0).setDepth(-10);
             this.stars = this.add.graphics().setScrollFactor(0).setDepth(-9);
@@ -166,6 +168,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         } this.burst(this.player.x, this.player.y, 0xff9b98); if (this.shake)
             this.cameras.main.shake(100, .003); if (!this.health) {
             this.status = 'dead';
+            analyticsTrack('player_death', biome(store.world.settings, Math.floor(this.player.x / TILE), Math.floor(this.player.y / TILE)), String(Math.floor(this.player.x / TILE)), String(Math.floor(this.player.y / TILE)));
             this.held.clear();
             this.physics.pause();
             this.notify('Signal lost. Respawn at the beacon; all possessions are retained.');
@@ -173,6 +176,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
         hit(f: Phaser.Physics.Arcade.Sprite, damage: number) { if (f.getData('dying'))
             return; const kind = f.getData('kind') as Kind; const vulnerable = kind === 'caster' && f.getData('state') === 'recover'; const hp = f.getData('hp') - damage * (vulnerable ? 1.5 : 1); f.setData('hp', hp); f.setTintFill(0xffffff); this.time.delayedCall(90, () => { if (f.active)
             f.clearTint(); }); this.burst(f.x, f.y, 0xffb889); if (hp <= 0) {
+            analyticsTrack('enemy_defeated', kind, store.world.inventory[this.selected]?.id ?? 'unknown', String(this.health));
             f.setData('dying', true);
             f.setVelocity(0);
             const id = f.getData('id') as string;
@@ -270,7 +274,7 @@ export function startSandbox(host: HTMLElement, store: SaveStore, onHud: (h: San
                 this.mining.progress = 0;
                 void this.transact((_b, w) => { if (readTile(w, x, y) !== m)
                     return ''; const drop = MATERIALS[m].drop; if (drop && !add(w.inventory, drop, 1))
-                    throw new Error('Inventory full. The block was not mined.'); editTile(w, x, y, 0); if (drop === 'stone')
+                    throw new Error('Inventory full. The block was not mined.'); editTile(w, x, y, 0); analyticsTrack('block_mined', MATERIALS[m].name, drop ?? '', biome(store.world.settings, x, Math.floor(this.player.y / TILE))); if (drop === 'stone')
                     w.progress.stone++; return `+1 ${drop ? ITEMS[drop].name : 'resource'}`; }).then(ok => { if (disposed)
                     return; if (ok) {
                     this.chunks.invalidate(x, y);
